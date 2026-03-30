@@ -6,10 +6,13 @@
 # ============================================================
 # 1. 載入與前處理 SEM 影像
 # ============================================================
+import torch
 import numpy as np
 import tifffile
 import matplotlib.pyplot as plt
 from pathlib import Path
+
+torch.set_float32_matmul_precision('high')  # 啟用 Tensor Core，提升 RTX 訓練速度
 
 def load_sem_image(path: str) -> np.ndarray:
     """載入 SEM 影像，統一為 float32 灰階 numpy array"""
@@ -24,7 +27,7 @@ def load_sem_image(path: str) -> np.ndarray:
     return img
 
 # 讀取你的影像（支援 tif/tiff/png）
-image_path = "your_sem_image.tif"
+image_path = "test_sem.tif"
 image = load_sem_image(image_path)
 print(f"影像尺寸: {image.shape}, 範圍: [{image.min():.3f}, {image.max():.3f}]")
 

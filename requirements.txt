@@ -1,0 +1,8 @@
+careamics>=0.1.0
+tifffile
+matplotlib
+numpy
+bm3d
+
+# CUDA 版 PyTorch（需另外指定 index-url）
+# pip install torch==2.9.1+cu128 torchvision==0.24.1+cu128 --index-url https://download.pytorch.org/whl/cu128

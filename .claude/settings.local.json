@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip:*)",
+      "Bash(py:*)",
+      "Bash(python:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(\"c:\\\\Users\\\\User\\\\AppData\\\\Local\\\\Python\\\\bin\\\\python.exe\":*)",
+      "Bash(where python:*)",
+      "Bash(source:*)"
+    ]
+  }
+}
