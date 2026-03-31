@@ -19,6 +19,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
+torch.set_float32_matmul_precision('high')  # 啟用 Tensor Core，提升 RTX 訓練速度
+
 
 # ============================================================
 # 1. Image Loading  (identical to denoise.py)

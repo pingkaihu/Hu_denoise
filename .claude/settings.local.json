@@ -7,7 +7,8 @@
       "Bash(nvidia-smi:*)",
       "Bash(\"c:\\\\Users\\\\User\\\\AppData\\\\Local\\\\Python\\\\bin\\\\python.exe\":*)",
       "Bash(where python:*)",
-      "Bash(source:*)"
+      "Bash(source:*)",
+      "Bash(/h/Hu_denoise/.venv/Scripts/pip install:*)"
     ]
   }
 }
