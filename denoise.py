@@ -7,19 +7,14 @@
 # ============================================================
 # 1. 載入與前處理 SEM 影像
 # ============================================================
-import torch
+import os
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+
 import numpy as np
 import tifffile
 import matplotlib.pyplot as plt
 from pathlib import Path
-
-torch.set_float32_matmul_precision('high')  # 啟用 Tensor Core，提升 RTX 訓練速度
-
-if torch.cuda.is_available():
-    print(f"使用 GPU: {torch.cuda.get_device_name(0)}")
-    print(f"顯存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-else:
-    print("警告：未偵測到 GPU，將使用 CPU 執行（速度較慢）")
 
 def load_sem_image(path: str) -> np.ndarray:
     """載入 SEM 影像，統一為 float32 灰階 numpy array"""
@@ -36,12 +31,21 @@ def load_sem_image(path: str) -> np.ndarray:
 
 if __name__ == '__main__':
     # Windows multiprocessing 需要此 guard
+    import torch
+    torch.set_float32_matmul_precision('high')  # 啟用 Tensor Core，提升 RTX 訓練速度
+
+    if torch.cuda.is_available():
+        print(f"使用 GPU: {torch.cuda.get_device_name(0)}")
+        print(f"顯存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    else:
+        print("警告：未偵測到 GPU，將使用 CPU 執行（速度較慢）")
 
     from careamics import CAREamist
     from careamics.config import create_n2v_configuration
+    from careamics.lightning import create_train_datamodule
 
     # 讀取影像
-    image_path = "test_sem.tif"
+    image_path = "h:/Hu_denoise/test_sem.tif"
     image = load_sem_image(image_path)
     print(f"影像尺寸: {image.shape}, 範圍: [{image.min():.3f}, {image.max():.3f}]")
 
@@ -64,9 +68,24 @@ if __name__ == '__main__':
     # ============================================================
     train_data = image[np.newaxis, ...]  # (1, H, W)
 
-    careamist.train(
-        train_source=train_data,
+    # num_workers=0：單程序 DataLoader，避免 Windows 每個 epoch 重新 spawn 子程序的開銷
+    datamodule = create_train_datamodule(
+        train_data=train_data,
+        data_type="array",
+        axes="SYX",
+        patch_size=[64, 64],
+        batch_size=128,
         val_percentage=0.1,
+        train_dataloader_params={"num_workers": 0, "shuffle": True},
+        val_dataloader_params={"num_workers": 0, "shuffle": False},
+    )
+
+    careamist.train(datamodule=datamodule)
+
+    # 使用自訂 datamodule 訓練時，mean/std 不會自動寫回 config，需手動設定
+    careamist.cfg.data_config.set_means_and_stds(
+        image_means=[float(train_data.mean())],
+        image_stds=[float(train_data.std())],
     )
     print("訓練完成！")
 
