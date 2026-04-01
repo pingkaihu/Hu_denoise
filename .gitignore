@@ -8,7 +8,7 @@ env/
 
 # Outputs
 *.png
-denoised_*.tif
+#denoised_*.tif
 
 # CAREamics checkpoints
 lightning_logs/
