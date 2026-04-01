@@ -7,6 +7,10 @@
 #   python denoise_torch.py     # train + denoise -> denoised_sem.tif
 # ============================================================
 
+import os
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+
 import time
 from typing import Tuple
 
@@ -390,7 +394,7 @@ def predict_tiled(
 def save_outputs(
     image:    np.ndarray,
     denoised: np.ndarray,
-    tif_path: str = "denoised_sem.tif",
+    tif_path: str = "denoised_sem_torch.tif",
     png_path: str = "denoising_result.png",
 ) -> None:
     """Save denoised TIF and side-by-side comparison PNG."""

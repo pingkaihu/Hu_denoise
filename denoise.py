@@ -114,16 +114,16 @@ if __name__ == '__main__':
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
 
     ax[0].imshow(image, cmap='gray')
-    ax[0].set_title('原始 SEM 影像')
+    ax[0].set_title('Originl SEM')
     ax[0].axis('off')
 
     ax[1].imshow(denoised, cmap='gray')
-    ax[1].set_title('N2V 去噪結果')
+    ax[1].set_title('N2V Denoised')
     ax[1].axis('off')
 
     diff = np.abs(image - denoised) * 3
     ax[2].imshow(diff, cmap='hot')
-    ax[2].set_title('差異圖 (×3)')
+    ax[2].set_title('Difference (mulitplied by 3)')
     ax[2].axis('off')
 
     plt.tight_layout()
