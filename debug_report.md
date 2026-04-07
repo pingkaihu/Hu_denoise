@@ -164,6 +164,68 @@ careamist.cfg.data_config.set_means_and_stds(
 
 ---
 
+---
+
+## 問題七：convert_to_tif.py 輸出全黑影像
+
+**日期：** 2026-04-07
+
+### 現象
+```
+python convert_to_tif.py TEST.png
+```
+轉換成功無報錯，但輸出的 `TEST.tif` 開啟後為全黑影像。
+
+### 診斷
+```python
+from PIL import Image
+import numpy as np
+img = Image.open("TEST.png")
+arr = np.array(img)
+# PIL mode: F
+# numpy dtype: float32, shape: (512, 512)
+# value range: min=-0.49, max=1.47
+l = img.convert("L")
+arr_l = np.array(l)
+# After convert("L"): dtype=uint8, min=0, max=1   ← 幾乎全 0
+```
+
+### 原因
+PIL 的 mode `F`（float32）轉 mode `L`（uint8）的內部邏輯為：
+
+```
+L = clip(int(F), 0, 255)
+```
+
+它**直接將 float 值截斷成整數，不做任何縮放**。TEST.png 值域為 −0.49 ~ 1.47，轉換後幾乎所有像素落在 0 或 1，輸出全黑。
+
+PIL 的設計假設 mode F 的語意值域為 0–255（一般相片的暫存格式）。但科學影像（SEM、顯微鏡）的 float32 代表物理量，值域任意，兩者假設衝突。
+
+同樣的問題也存在於 16-bit PNG（PIL mode `I`，int32 陣列）：`convert("L")` 截斷高位元，大量像素歸零。
+
+### 解決方式
+在 `convert_to_tif.py` 中，PIL 只負責解碼格式（`Image.open`），不再依賴其型別轉換。改由 numpy 自行處理：
+
+```python
+arr = np.array(img)          # 取得原始陣列，保留 dtype
+
+# float32 → min-max 正規化到 [0.0, 1.0]
+if np.issubdtype(arr.dtype, np.floating):
+    lo, hi = arr.min(), arr.max()
+    arr = ((arr - lo) / (hi - lo)).astype(np.float32)
+
+# int32（PIL 讀取 16-bit PNG 的格式）→ 轉為 uint16
+if arr.dtype == np.int32:
+    arr = arr.clip(0, 65535).astype(np.uint16)
+
+# uint8 / uint16 → 原樣保留
+```
+
+### 教訓
+PIL 是為一般相片設計的工具，型別轉換假設值域為 0–255。科學影像處理應只使用 PIL 做格式解碼，所有數值處理改用 numpy 自行控制。
+
+---
+
 ## 修改摘要
 
 | 檔案 | 修改內容 |

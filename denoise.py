@@ -16,17 +16,18 @@ import tifffile
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-def load_sem_image(path: str) -> np.ndarray:
-    """載入 SEM 影像，統一為 float32 灰階 numpy array"""
+def load_sem_image(path: str):
+    """載入 SEM 影像，統一為 float32 灰階 numpy array，同時回傳原始 min/max 供還原用"""
     img = tifffile.imread(path).astype(np.float32)
 
     # 若是 RGB 轉灰階
     if img.ndim == 3 and img.shape[-1] == 3:
         img = img @ np.array([0.2989, 0.5870, 0.1140])
 
-    # 正規化到 [0, 1]
-    img = (img - img.min()) / (img.max() - img.min() + 1e-8)
-    return img
+    # 保留原始值域，正規化到 [0, 1]
+    img_min, img_max = float(img.min()), float(img.max())
+    img = (img - img_min) / (img_max - img_min + 1e-8)
+    return img, img_min, img_max
 
 
 if __name__ == '__main__':
@@ -45,9 +46,9 @@ if __name__ == '__main__':
     from careamics.lightning import create_train_datamodule
 
     # 讀取影像
-    image_path = "h:/Hu_denoise/test_sem.tif"
-    image = load_sem_image(image_path)
-    print(f"影像尺寸: {image.shape}, 範圍: [{image.min():.3f}, {image.max():.3f}]")
+    image_path = "test_sem.tif"
+    image, img_min, img_max = load_sem_image(image_path)
+    print(f"影像尺寸: {image.shape}, 原始範圍: [{img_min:.3f}, {img_max:.3f}]")
 
     # ============================================================
     # 2. 建立 N2V 訓練設定
@@ -101,11 +102,14 @@ if __name__ == '__main__':
     )
     denoised = np.squeeze(denoised)
 
+    # 還原至原始灰階值域
+    denoised_original = (denoised * (img_max - img_min) + img_min).astype(np.float32)
+
     # ============================================================
     # 5. 儲存結果
     # ============================================================
-    tifffile.imwrite("denoised_sem.tif", denoised)
-    print("已儲存至 denoised_sem.tif")
+    tifffile.imwrite("denoised_sem.tif", denoised_original)
+    print(f"已儲存至 denoised_sem.tif，輸出範圍: [{denoised_original.min():.3f}, {denoised_original.max():.3f}]")
 
 
     # ============================================================

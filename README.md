@@ -19,6 +19,19 @@ python denoise.py
 
 輸出：`denoised_sem.tif`、`denoising_result.png`
 
+若影像不是 TIFF 格式，先用 `convert_to_tif.py` 轉換：
+
+```bash
+# 轉換單一檔案（預設輸出灰階）
+python convert_to_tif.py my_image.png
+
+# 轉換整個資料夾
+python convert_to_tif.py ./images --output ./tifs
+
+# 保留 RGB 色彩
+python convert_to_tif.py my_image.jpg --keep-color
+```
+
 ---
 
 ## 腳本說明
@@ -31,6 +44,7 @@ python denoise.py
 | [denoise_torch.py](denoise_torch.py) | PyTorch | 純 PyTorch 手刻 N2V，無需 careamics，Windows GPU 完整支援 |
 | [denoise_tf.py](denoise_tf.py) | TensorFlow/Keras | TensorFlow 版 N2V，注意 Windows 原生不支援 GPU（需 WSL2） |
 | [test_sem.py](test_sem.py) | — | 產生 512×512 合成 SEM 測試影像（`test_sem.tif`），加入高斯噪聲 |
+| [convert_to_tif.py](convert_to_tif.py) | — | 將 PNG/JPG/BMP/WebP 等格式轉換為 TIFF，供去噪腳本使用 |
 
 ### 文件說明
 

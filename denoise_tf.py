@@ -27,17 +27,19 @@ from tensorflow.keras import layers
 # 1. Image Loading  (identical to denoise.py / denoise_torch.py)
 # ============================================================
 
-def load_sem_image(path: str) -> np.ndarray:
-    """Load SEM image, normalize to float32 [0, 1] grayscale numpy array."""
+def load_sem_image(path: str) -> Tuple[np.ndarray, float, float]:
+    """Load SEM image, normalize to float32 [0, 1] grayscale numpy array.
+    Also returns original min/max for restoring pixel values after denoising."""
     img = tifffile.imread(path).astype(np.float32)
 
     # Convert RGB to grayscale if needed
     if img.ndim == 3 and img.shape[-1] == 3:
         img = img @ np.array([0.2989, 0.5870, 0.1140])
 
-    # Normalize to [0, 1]
-    img = (img - img.min()) / (img.max() - img.min() + 1e-8)
-    return img
+    # Preserve original range, normalize to [0, 1]
+    img_min, img_max = float(img.min()), float(img.max())
+    img = (img - img_min) / (img_max - img_min + 1e-8)
+    return img, img_min, img_max
 
 
 # ============================================================
@@ -346,12 +348,16 @@ def predict_tiled(
 def save_outputs(
     image:    np.ndarray,
     denoised: np.ndarray,
+    img_min:  float,
+    img_max:  float,
     tif_path: str = "denoised_sem_tf.tif",
     png_path: str = "denoising_result.png",
 ) -> None:
-    """Save denoised TIF and side-by-side comparison PNG."""
-    tifffile.imwrite(tif_path, denoised)
-    print(f"Saved: {tif_path}")
+    """Save denoised TIF (original value range) and side-by-side comparison PNG."""
+    # Restore original grayscale range before saving
+    denoised_original = (denoised * (img_max - img_min) + img_min).astype(np.float32)
+    tifffile.imwrite(tif_path, denoised_original)
+    print(f"Saved: {tif_path},  range: [{denoised_original.min():.3f}, {denoised_original.max():.3f}]")
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
@@ -395,8 +401,8 @@ def main(
         print("No GPU found — running on CPU")
 
     # 1. Load image
-    image = load_sem_image(image_path)
-    print(f"Image shape: {image.shape},  range: [{image.min():.3f}, {image.max():.3f}]")
+    image, img_min, img_max = load_sem_image(image_path)
+    print(f"Image shape: {image.shape},  range: [{img_min:.3f}, {img_max:.3f}]")
 
     # 2. Build model
     model = build_n2v_unet(base_features=32)
@@ -418,7 +424,7 @@ def main(
     )
 
     # 5. Save outputs
-    save_outputs(image, denoised)
+    save_outputs(image, denoised, img_min, img_max)
 
 
 if __name__ == '__main__':
