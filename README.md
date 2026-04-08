@@ -13,17 +13,19 @@ h:/Hu_denoise/venv/Scripts/activate
 # 產生測試影像（若無真實 SEM 影像）
 python test_sem.py
 
-# 執行去噪（依 GPU 情況選擇）
-python denoise.py                    # NVIDIA GPU（CAREamics）
-python denoise_torch.py              # NVIDIA GPU（純 PyTorch）
-python denoise_torch_directml.py     # Intel / AMD iGPU（DirectML）
+# 執行去噪（依 GPU 情況與噪聲類型選擇）
+python denoise.py                    # NVIDIA GPU（CAREamics，一般噪聲）
+python denoise_torch.py              # NVIDIA GPU（純 PyTorch，一般噪聲）
+python denoise_log_torch.py          # NVIDIA GPU（純 PyTorch，Speckle 噪聲）
+python denoise_torch_intel_mkl.py    # Intel CPU + MKL 最佳化（無 GPU 時）
 ```
 
 | 腳本 | 輸出 TIF | 輸出 PNG |
 |---|---|---|
 | `denoise.py` | `denoised_sem.tif` | `denoising_result.png` |
 | `denoise_torch.py` | `denoised_sem_torch.tif` | `denoising_result.png` |
-| `denoise_torch_directml.py` | `denoised_sem_directml.tif` | `denoising_result_directml.png` |
+| `denoise_log_torch.py` | `denoised_sem_log_torch.tif` | `denoising_log_result.png` |
+| `denoise_torch_intel_mkl.py` | `denoised_sem_intel_mkl.tif` | `denoising_result_intel_mkl.png` |
 
 若影像不是 TIFF 格式，先用 `convert_to_tif.py` 轉換：
 
@@ -47,8 +49,9 @@ python convert_to_tif.py my_image.jpg --keep-color
 | 檔案 | 框架 | GPU 支援 | 說明 |
 |---|---|---|---|
 | [denoise.py](denoise.py) | CAREamics | NVIDIA CUDA | 主要推薦版本，使用 CAREamics 高階框架執行 N2V |
-| [denoise_torch.py](denoise_torch.py) | PyTorch | NVIDIA CUDA | 純 PyTorch 手刻 N2V，無需 careamics |
-| [denoise_torch_directml.py](denoise_torch_directml.py) | PyTorch + DirectML | Intel / AMD iGPU | 無 NVIDIA GPU 時的替代方案，透過 DirectML 使用內建顯示卡 |
+| [denoise_torch.py](denoise_torch.py) | PyTorch | NVIDIA CUDA | 純 PyTorch N2V，適用一般加性噪聲（高斯/泊松） |
+| [denoise_log_torch.py](denoise_log_torch.py) | PyTorch | NVIDIA CUDA | **Log + N2V**，適用 Speckle 乘性噪聲（SEM 低能束/高倍率） |
+| [denoise_torch_intel_mkl.py](denoise_torch_intel_mkl.py) | PyTorch + Intel MKL | CPU（Intel 最佳化） | 無 NVIDIA GPU 時的替代方案，透過 MKL-DNN / IPEX 最佳化 CPU 效能 |
 | [denoise_tf.py](denoise_tf.py) | TensorFlow/Keras | 僅 CPU（Windows） | TF 版 N2V，Windows 不支援 GPU，需 WSL2 才能用 GPU |
 | [test_sem.py](test_sem.py) | — | — | 產生 512×512 合成 SEM 測試影像（`test_sem.tif`），加入高斯噪聲 |
 | [convert_to_tif.py](convert_to_tif.py) | — | — | 將 PNG/JPG/BMP/WebP 等格式轉換為 TIFF，供去噪腳本使用 |
@@ -69,7 +72,7 @@ python test_directml.py --benchmark # CPU vs DirectML 效能比較
 | 檔案 | 說明 |
 |---|---|
 | [guide.md](guide.md) | N2V 技術背景、原理說明、Noise2Noise 系列方法介紹 |
-| [denoise_comparison.md](denoise_comparison.md) | 三個去噪腳本的框架比較（速度、相依性、GPU 支援） |
+| [denoise_comparison.md](denoise_comparison.md) | 去噪腳本的框架比較（演算法、速度、相依性、GPU 支援） |
 | [settings_guide.md](settings_guide.md) | N2V 參數調整指南（patch_size、batch_size、epochs），含 RTX 3080 時間估計 |
 | [debug_report.md](debug_report.md) | 常見錯誤排除紀錄（模組未安裝、GPU 設定等） |
 | [CLAUDE.md](CLAUDE.md) | 專案架構說明與 Claude Code 協作指引 |
@@ -86,8 +89,9 @@ pip install careamics tifffile matplotlib numpy bm3d
 pip install torch==2.9.1+cu128 torchvision==0.24.1+cu128 \
     --index-url https://download.pytorch.org/whl/cu128
 
-# Intel / AMD iGPU（DirectML）
-pip install torch torchvision torch-directml
+# Intel CPU 最佳化（MKL 內建於標準 PyTorch，IPEX 為選用）
+pip install torch torchvision
+pip install intel-extension-for-pytorch   # 選用，進一步提升 Intel CPU 效能
 
 # TF 版（Windows 僅 CPU）
 pip install tensorflow
@@ -99,7 +103,8 @@ pip install tensorflow
 
 | 顯卡類型 | 推薦腳本 | 備註 |
 |---|---|---|
-| NVIDIA RTX / GTX | `denoise.py` 或 `denoise_torch.py` | CUDA 12.8 測試通過（RTX 3080） |
-| Intel Iris Xe / Arc | `denoise_torch_directml.py` | 需安裝 `torch-directml` |
-| Intel UHD 620/630（舊款） | `denoise_torch_directml.py`（CPU 模式） | iGPU 效益低，腳本會自動回退 CPU |
+| NVIDIA RTX / GTX（一般噪聲） | `denoise.py` 或 `denoise_torch.py` | CUDA 12.8 測試通過（RTX 3080） |
+| NVIDIA RTX / GTX（Speckle） | `denoise_log_torch.py` | Log + N2V，適用乘性 speckle |
+| Intel Iris Xe / Arc（舊款 iGPU） | `denoise_torch_intel_mkl.py` | CPU + MKL-DNN，選用 IPEX 進一步加速 |
+| Intel UHD 620/630 | `denoise_torch_intel_mkl.py` | iGPU 效益低，直接走 CPU 路徑更穩定 |
 | 無獨顯 | 任一腳本 | 自動使用 CPU，速度較慢 |

@@ -13,7 +13,8 @@
       "Bash(h:/Hu_denoise/venv/Scripts/python.exe -c \"import sys; print\\(''prefix:'', sys.prefix\\)\")",
       "Bash(h:/Hu_denoise/venv/Scripts/pip.exe install:*)",
       "Bash(h:/Hu_denoise/venv/Scripts/python.exe -c \"import torch; print\\(''PyTorch:'', torch.__version__\\); print\\(''CUDA available:'', torch.cuda.is_available\\(\\)\\); print\\(''GPU:'', torch.cuda.get_device_name\\(0\\) if torch.cuda.is_available\\(\\) else ''N/A''\\)\")",
-      "Bash(ls h:/Hu_denoise/*.py h:/Hu_denoise/*.md h:/Hu_denoise/.gitignore)"
+      "Bash(ls h:/Hu_denoise/*.py h:/Hu_denoise/*.md h:/Hu_denoise/.gitignore)",
+      "WebSearch"
     ]
   }
 }

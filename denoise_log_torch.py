@@ -1,11 +1,16 @@
 # ============================================================
-# SEM Image Denoising — Noise2Void (PyTorch + Intel DirectML)
+# SEM Image Denoising — Log + Noise2Void (pure PyTorch)
 # ============================================================
-# Requirements: torch  tifffile  matplotlib  numpy  torch-directml
-#   pip install torch-directml
+# Strategy: homomorphic filtering converts multiplicative speckle
+#   y = x · n  (n ~ Gamma)
+# to additive form via log1p:
+#   log(y) = log(x) + log(n)
+# This restores the N2V pixel-independence assumption for speckle.
+#
+# Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 # Usage:
-#   python test_sem.py                   # generate synthetic test image
-#   python denoise_torch_directml.py     # train + denoise -> denoised_sem_directml.tif
+#   python test_sem.py              # generate synthetic test image
+#   python denoise_log_torch.py     # train + denoise -> denoised_sem_log_torch.tif
 # ============================================================
 
 import os
@@ -24,72 +29,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('high')  # 啟用 Tensor Core，提升 RTX 訓練速度
 
 
 # ============================================================
-# Device Selection — DirectML > CPU fallback
-#
-# 選項一（DirectML）效益不佳時的替代方案：
-#
-#   選項三：純 CPU + Intel MKL 最佳化
-#   ─────────────────────────────────
-#   適用情境：
-#     - Intel iGPU 為舊款（UHD 620/630 等），DirectML 加速效益低於 CPU
-#     - torch_directml 安裝失敗或出現算子不支援的錯誤
-#     - 模型較小（base_features <= 16）時 CPU 與 iGPU 差距不明顯
-#
-#   使用方式：直接將 main() 中的 device 改為：
-#
-#       import torch
-#       torch.set_num_threads(N)   # N = 實體核心數，例如 8
-#       device = torch.device('cpu')
-#
-#   Intel CPU 預設已透過 PyTorch 內建的 MKL-DNN（oneDNN）加速，
-#   無需額外安裝。可用以下指令確認 MKL 已啟用：
-#
-#       python -c "import torch; print(torch.__config__.show())"
-#       # 輸出中應可見 'USE_MKL=ON' 及 'USE_MKLDNN=ON'
-#
-#   若要進一步最佳化，可安裝 Intel Extension for PyTorch（IPEX）：
-#
-#       pip install intel-extension-for-pytorch
-#
-#       import intel_extension_for_pytorch as ipex
-#       model = ipex.optimize(model)   # 套用 Intel 算子融合與量化優化
-#       device = torch.device('cpu')   # IPEX 目前主力支援 CPU 路徑
-#
-# ============================================================
-
-def get_device() -> torch.device:
-    """
-    Return the best available device in priority order:
-      1. Intel/AMD GPU via DirectML (torch_directml)
-      2. NVIDIA CUDA (if somehow available)
-      3. CPU fallback
-
-    若 DirectML 效益不理想，請參考上方「選項三」的替代方案說明。
-    """
-    try:
-        import torch_directml
-        if torch_directml.is_available():
-            dml_device = torch_directml.device()
-            print(f"[Device] DirectML — {torch_directml.device_name(0)}")
-            return dml_device
-    except ImportError:
-        print("[Device] torch_directml not installed. "
-              "Run: pip install torch-directml")
-
-    if torch.cuda.is_available():
-        print(f"[Device] CUDA — {torch.cuda.get_device_name(0)}")
-        return torch.device('cuda')
-
-    print("[Device] CPU (no GPU acceleration available)")
-    return torch.device('cpu')
-
-
-# ============================================================
-# 1. Image Loading  (identical to denoise_torch.py)
+# 1. Image Loading
 # ============================================================
 
 def load_sem_image(path: str) -> Tuple[np.ndarray, float, float]:
@@ -97,19 +41,59 @@ def load_sem_image(path: str) -> Tuple[np.ndarray, float, float]:
     Also returns original min/max for restoring pixel values after denoising."""
     img = tifffile.imread(path).astype(np.float32)
 
+    # Convert RGB to grayscale if needed
     if img.ndim == 3 and img.shape[-1] == 3:
         img = img @ np.array([0.2989, 0.5870, 0.1140])
 
+    # Preserve original range, normalize to [0, 1]
     img_min, img_max = float(img.min()), float(img.max())
     img = (img - img_min) / (img_max - img_min + 1e-8)
     return img, img_min, img_max
 
 
 # ============================================================
-# 2. UNet Architecture  (identical to denoise_torch.py)
+# 1.5 Log-Domain Transforms
+# ============================================================
+
+def apply_log_transform(image: np.ndarray) -> Tuple[np.ndarray, float, float]:
+    """
+    Convert linear [0, 1] image to normalized log domain.
+
+    Steps:
+      1. log1p(image)  — numerically stable; image ∈ [0,1] so log1p ∈ [0, log(2)]
+      2. Re-normalize to [0, 1] and record log_min, log_max for inversion
+
+    The N2V network trains and infers entirely in this log-normalized space.
+    """
+    log_img = np.log1p(image)
+    log_min, log_max = float(log_img.min()), float(log_img.max())
+    log_img = (log_img - log_min) / (log_max - log_min + 1e-8)
+    return log_img, log_min, log_max
+
+
+def inverse_log_transform(
+    denoised_log: np.ndarray,
+    log_min: float,
+    log_max: float,
+) -> np.ndarray:
+    """
+    Reverse the log normalization, then apply expm1 to return to linear [0, 1].
+
+    Steps:
+      1. Un-normalize: restore log1p-scale values
+      2. expm1: inverse of log1p → linear domain [0, 1]
+    """
+    denoised_log_unnorm = denoised_log * (log_max - log_min) + log_min
+    return np.expm1(denoised_log_unnorm).astype(np.float32)
+
+
+# ============================================================
+# 2. UNet Architecture
 # ============================================================
 
 class DoubleConvBlock(nn.Module):
+    """Two sequential Conv2d -> BatchNorm2d -> LeakyReLU(0.1) operations."""
+
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
         self.block = nn.Sequential(
@@ -126,56 +110,87 @@ class DoubleConvBlock(nn.Module):
 
 
 class N2VUNet(nn.Module):
-    """4-level encoder-decoder UNet for Noise2Void (2D grayscale)."""
+    """
+    4-level encoder-decoder UNet for Noise2Void (2D grayscale).
+
+    Encoder channel widths : 1 -> 32 -> 64 -> 128 -> 256 (bottleneck)
+    Decoder                : skip-concat + DoubleConvBlock at each level
+    Downsampling           : MaxPool2d(2)
+    Upsampling             : bilinear Upsample(x2) + Conv2d(1x1) to halve channels
+
+    Input spatial dimensions must be divisible by 8.
+    """
 
     def __init__(self, in_channels: int = 1, base_features: int = 32):
         super().__init__()
-        f = base_features
+        f = base_features  # 32
 
-        self.enc1 = DoubleConvBlock(in_channels, f)
-        self.enc2 = DoubleConvBlock(f,     f * 2)
-        self.enc3 = DoubleConvBlock(f * 2, f * 4)
-        self.enc4 = DoubleConvBlock(f * 4, f * 8)
+        # Encoder
+        self.enc1 = DoubleConvBlock(in_channels, f)      # -> (B, 32,  H,    W)
+        self.enc2 = DoubleConvBlock(f,     f * 2)        # -> (B, 64,  H/2,  W/2)
+        self.enc3 = DoubleConvBlock(f * 2, f * 4)        # -> (B, 128, H/4,  W/4)
+        self.enc4 = DoubleConvBlock(f * 4, f * 8)        # -> (B, 256, H/8,  W/8) bottleneck
         self.pool = nn.MaxPool2d(2)
 
+        # Decoder — each up block: upsample + 1x1 conv to halve channels, then concat+DoubleConv
         self.up3  = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Conv2d(f * 8, f * 4, kernel_size=1),
         )
-        self.dec3 = DoubleConvBlock(f * 8, f * 4)
+        self.dec3 = DoubleConvBlock(f * 8, f * 4)       # input: cat(up3, enc3) = 128+128
 
         self.up2  = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Conv2d(f * 4, f * 2, kernel_size=1),
         )
-        self.dec2 = DoubleConvBlock(f * 4, f * 2)
+        self.dec2 = DoubleConvBlock(f * 4, f * 2)       # input: cat(up2, enc2) = 64+64
 
         self.up1  = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Conv2d(f * 2, f, kernel_size=1),
         )
-        self.dec1 = DoubleConvBlock(f * 2, f)
+        self.dec1 = DoubleConvBlock(f * 2, f)           # input: cat(up1, enc1) = 32+32
 
+        # Output head — no activation (regression)
         self.head = nn.Conv2d(f, in_channels, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        e1 = self.enc1(x)
-        e2 = self.enc2(self.pool(e1))
-        e3 = self.enc3(self.pool(e2))
-        e4 = self.enc4(self.pool(e3))
+        # Encoder
+        e1 = self.enc1(x)                                # (B, 32,  H,   W)
+        e2 = self.enc2(self.pool(e1))                    # (B, 64,  H/2, W/2)
+        e3 = self.enc3(self.pool(e2))                    # (B, 128, H/4, W/4)
+        e4 = self.enc4(self.pool(e3))                    # (B, 256, H/8, W/8)
 
-        d3 = self.dec3(torch.cat([self.up3(e4), e3], dim=1))
-        d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1))
-        d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))
+        # Decoder with skip connections
+        d3 = self.dec3(torch.cat([self.up3(e4), e3], dim=1))  # (B, 128, H/4, W/4)
+        d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1))  # (B, 64,  H/2, W/2)
+        d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))  # (B, 32,  H,   W)
 
-        return self.head(d1)
+        return self.head(d1)                              # (B, 1,   H,   W)
 
 
 # ============================================================
-# 3. N2V Dataset with Blind-Spot Masking  (identical to denoise_torch.py)
+# 3. N2V Dataset with Blind-Spot Masking
 # ============================================================
 
 class N2VDataset(Dataset):
+    """
+    Extracts random patches from a single image with N2V blind-spot masking.
+
+    Each masked pixel is replaced by a randomly sampled neighbor value
+    (NOT zeros) — this is the key N2V trick that prevents the network from
+    learning the identity mapping.
+
+    Parameters
+    ----------
+    image          : (H, W) float32 array, range [0, 1]
+    patch_size     : side length of square patches (must be divisible by 8)
+    num_patches    : virtual epoch size (patches re-sampled each epoch)
+    mask_ratio     : fraction of pixels masked per patch (default 0.006)
+    neighbor_radius: half-width of the neighborhood window for replacement values
+    rng_seed       : seed for reproducibility
+    """
+
     def __init__(
         self,
         image: np.ndarray,
@@ -202,10 +217,16 @@ class N2VDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         P = self.patch_size
+
+        # Sample a random patch
         r0 = self.rng.integers(0, self.H - P)
         c0 = self.rng.integers(0, self.W - P)
-        patch = self.image[r0:r0 + P, c0:c0 + P].copy()
+        patch = self.image[r0:r0 + P, c0:c0 + P].copy()  # (P, P)
+
+        # Apply N2V masking
         corrupted, mask = self._apply_n2v_masking(patch)
+
+        # Shape: (1, P, P) float32
         return (
             torch.from_numpy(corrupted).unsqueeze(0),
             torch.from_numpy(patch).unsqueeze(0),
@@ -215,15 +236,26 @@ class N2VDataset(Dataset):
     def _apply_n2v_masking(
         self, patch: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Replace n_masked random pixels with randomly sampled neighbor values.
+
+        Returns (corrupted_patch, binary_mask) — mask is 1.0 at masked positions.
+        """
         P = self.patch_size
         corrupted = patch.copy()
         mask      = np.zeros((P, P), dtype=np.float32)
-        flat_idx  = self.rng.choice(P * P, size=self.n_masked, replace=False)
+
+        # Choose unique pixel positions to mask (flat index, then unravel)
+        flat_idx = self.rng.choice(P * P, size=self.n_masked, replace=False)
         rows, cols = np.unravel_index(flat_idx, (P, P))
+
         rad = self.neighbor_radius
+        # Pre-compute list of valid non-zero offsets to avoid the while-loop overhead
         dr_choices = np.arange(-rad, rad + 1)
         dc_choices = np.arange(-rad, rad + 1)
+
         for r, c in zip(rows, cols):
+            # Sample random offset, excluding (0, 0)
             while True:
                 dr = int(self.rng.choice(dr_choices))
                 dc = int(self.rng.choice(dc_choices))
@@ -233,18 +265,19 @@ class N2VDataset(Dataset):
             nc = int(np.clip(c + dc, 0, P - 1))
             corrupted[r, c] = patch[nr, nc]
             mask[r, c]      = 1.0
+
         return corrupted, mask
 
 
 # ============================================================
-# 4. Training Loop  (DirectML-aware: pin_memory disabled)
+# 4. Training Loop
 # ============================================================
 
 def train_n2v(
     model: nn.Module,
     image: np.ndarray,
     patch_size:     int   = 64,
-    batch_size:     int   = 64,    # smaller default: iGPU has shared RAM
+    batch_size:     int   = 128,
     num_epochs:     int   = 100,
     learning_rate:  float = 4e-4,
     val_percentage: float = 0.1,
@@ -252,17 +285,12 @@ def train_n2v(
 ) -> nn.Module:
     """
     Self-supervised N2V training on a single image.
-
-    DirectML note: pin_memory is disabled (only works with CUDA).
-    batch_size default is smaller (64) since iGPU shares system RAM.
+    Loss is MSE computed only at masked pixel positions.
     """
     if device is None:
-        device = get_device()
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     model = model.to(device)
-
-    # Detect if running under DirectML to disable pin_memory
-    is_cuda = hasattr(device, 'type') and device.type == 'cuda'
 
     patches_per_epoch = 2000
     n_val   = max(1, int(patches_per_epoch * val_percentage))
@@ -271,11 +299,11 @@ def train_n2v(
     train_ds = N2VDataset(image, patch_size=patch_size, num_patches=n_train, rng_seed=42)
     val_ds   = N2VDataset(image, patch_size=patch_size, num_patches=n_val,   rng_seed=99)
 
-    # pin_memory=True only works with CUDA; must be False for DirectML/CPU
+    # num_workers=0 is required on Windows to avoid multiprocessing issues
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              num_workers=0, pin_memory=is_cuda)
+                              num_workers=0, pin_memory=(device.type == 'cuda'))
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
-                              num_workers=0, pin_memory=False)
+                              num_workers=0)
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
@@ -289,6 +317,7 @@ def train_n2v(
     for epoch in range(1, num_epochs + 1):
         t0 = time.time()
 
+        # --- Train ---
         model.train()
         tr_loss, tr_count = 0.0, 0
         for noisy_in, clean_tgt, mask in train_loader:
@@ -298,6 +327,8 @@ def train_n2v(
 
             optimizer.zero_grad()
             pred = model(noisy_in)
+
+            # Loss only at masked positions
             loss = loss_fn(pred * mask, clean_tgt * mask)
             loss.backward()
             optimizer.step()
@@ -305,6 +336,7 @@ def train_n2v(
             tr_loss  += loss.item()
             tr_count += mask.sum().item()
 
+        # --- Validate ---
         model.eval()
         vl_loss, vl_count = 0.0, 0
         with torch.no_grad():
@@ -331,8 +363,6 @@ def train_n2v(
 
 # ============================================================
 # 5. Tiled Inference with Hann-Window Blending
-#    DirectML note: hann_window computed on CPU, then converted to numpy.
-#    DirectML does not support torch.hann_window on device directly.
 # ============================================================
 
 def predict_tiled(
@@ -344,10 +374,12 @@ def predict_tiled(
 ) -> np.ndarray:
     """
     Run inference on large images by processing overlapping tiles.
-    Hann window is always computed on CPU (DirectML compatibility).
+    Overlapping regions are blended using a 2D Hann window to avoid seams.
+
+    Returns denoised image as float32 (H, W).
     """
     if device is None:
-        device = get_device()
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     H, W      = image.shape
     th, tw    = tile_size
@@ -360,14 +392,15 @@ def predict_tiled(
     assert th % 8 == 0 and tw % 8 == 0, \
         f"tile_size dimensions must be divisible by 8, got {tile_size}"
 
-    # Always compute Hann window on CPU (DirectML doesn't support hann_window on device)
+    # 2D Hann window for weighted blending
     hann_h  = torch.hann_window(th, periodic=False).numpy()
     hann_w  = torch.hann_window(tw, periodic=False).numpy()
-    hann_2d = np.outer(hann_h, hann_w).astype(np.float64)
+    hann_2d = np.outer(hann_h, hann_w)               # (th, tw)
 
     output_sum = np.zeros((H, W), dtype=np.float64)
     weight_sum = np.zeros((H, W), dtype=np.float64)
 
+    # Build tile origin lists, ensuring the last tile reaches the image edge
     row_starts = list(range(0, H - th + 1, stride_h))
     col_starts = list(range(0, W - tw + 1, stride_w))
     if row_starts[-1] + th < H:
@@ -385,7 +418,6 @@ def predict_tiled(
                 tile_np = image[r0:r0 + th, c0:c0 + tw]
                 tile_t  = torch.from_numpy(tile_np).unsqueeze(0).unsqueeze(0).to(device)
 
-                # Move prediction back to CPU numpy (DirectML tensors need explicit .cpu())
                 pred_np = model(tile_t).squeeze().cpu().numpy()
 
                 output_sum[r0:r0 + th, c0:c0 + tw] += pred_np.astype(np.float64) * hann_2d
@@ -400,7 +432,7 @@ def predict_tiled(
 
 
 # ============================================================
-# 6. Save Outputs  (identical to denoise_torch.py)
+# 6. Save Outputs
 # ============================================================
 
 def save_outputs(
@@ -408,24 +440,31 @@ def save_outputs(
     denoised: np.ndarray,
     img_min:  float,
     img_max:  float,
-    tif_path: str = "denoised_sem_directml.tif",
-    png_path: str = "denoising_result_directml.png",
+    tif_path: str = "denoised_sem_log_torch.tif",
+    png_path: str = "denoising_log_result.png",
 ) -> None:
+    """Save denoised TIF (original value range) and side-by-side comparison PNG."""
+    # Restore original grayscale range before saving
     denoised_original = (denoised * (img_max - img_min) + img_min).astype(np.float32)
     tifffile.imwrite(tif_path, denoised_original)
     print(f"Saved: {tif_path},  range: [{denoised_original.min():.3f}, {denoised_original.max():.3f}]")
 
+    # Visualization uses linear [0, 1] values (both image and denoised are in this space)
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
     axes[0].imshow(image,    cmap='gray')
     axes[0].set_title('Original SEM Image')
     axes[0].axis('off')
+
     axes[1].imshow(denoised, cmap='gray')
-    axes[1].set_title('N2V Denoised (DirectML)')
+    axes[1].set_title('Log + N2V Denoised')
     axes[1].axis('off')
+
     diff = np.abs(image - denoised) * 3
     axes[2].imshow(diff, cmap='hot')
     axes[2].set_title('Difference (×3)')
     axes[2].axis('off')
+
     plt.tight_layout()
     plt.savefig(png_path, dpi=150)
     plt.show()
@@ -439,36 +478,49 @@ def save_outputs(
 def main(
     image_path:   str             = "test_sem.tif",
     patch_size:   int             = 64,
-    batch_size:   int             = 64,
+    batch_size:   int             = 128,
     num_epochs:   int             = 100,
     tile_size:    Tuple[int, int] = (256, 256),
     tile_overlap: Tuple[int, int] = (48, 48),
 ) -> None:
-    """Full N2V pipeline: load -> train -> predict -> save."""
-    device = get_device()
+    """Full Log + N2V pipeline: load -> log transform -> train -> predict -> expm1 -> save."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # 1. Load image (normalized to [0, 1], original range preserved)
     image, img_min, img_max = load_sem_image(image_path)
-    print(f"Image shape: {image.shape},  range: [{img_min:.3f}, {img_max:.3f}]")
+    print(f"Image shape: {image.shape},  original range: [{img_min:.3f}, {img_max:.3f}]")
 
+    # 1.5 Log transform: multiplicative speckle → additive noise in log domain
+    log_image, log_min, log_max = apply_log_transform(image)
+    print(f"Log-domain range (before norm): [{log_min:.4f}, {log_max:.4f}]")
+
+    # 2. Build model
     model = N2VUNet(in_channels=1, base_features=32)
 
+    # 3. Train on log-domain image
     model = train_n2v(
-        model, image,
+        model, log_image,
         patch_size=patch_size,
         batch_size=batch_size,
         num_epochs=num_epochs,
         device=device,
     )
 
-    print("\nRunning tiled inference...")
-    denoised = predict_tiled(
-        model, image,
+    # 4. Tiled inference in log domain
+    print("\nRunning tiled inference (log domain)...")
+    denoised_log = predict_tiled(
+        model, log_image,
         tile_size=tile_size,
         tile_overlap=tile_overlap,
         device=device,
     )
 
-    save_outputs(image, denoised, img_min, img_max)
+    # 4.5 Inverse log transform → linear domain [0, 1]
+    denoised_linear = inverse_log_transform(denoised_log, log_min, log_max)
+    print(f"Linear-domain denoised range: [{denoised_linear.min():.3f}, {denoised_linear.max():.3f}]")
+
+    # 5. Save outputs (restores original pixel value range in .tif)
+    save_outputs(image, denoised_linear, img_min, img_max)
 
 
 if __name__ == '__main__':

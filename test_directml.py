@@ -12,10 +12,10 @@ import unittest
 import numpy as np
 import torch
 
-from denoise_torch_directml import (
+from denoise_torch_intel_mkl import (
     N2VDataset,
     N2VUNet,
-    get_device,
+    setup_cpu_device,
     load_sem_image,
     predict_tiled,
     train_n2v,
@@ -35,19 +35,23 @@ def _tiny_model() -> N2VUNet:
 
 class TestDeviceSelection(unittest.TestCase):
 
-    def test_get_device_returns_torch_device_or_directml(self):
-        """get_device() must return something we can call .to(device) with."""
-        device = get_device()
-        # torch.device supports str(); directml device also supports tensor ops
+    def test_setup_cpu_device_returns_cpu(self):
+        """setup_cpu_device() must return torch.device('cpu')."""
+        device = setup_cpu_device()
+        self.assertEqual(device.type, 'cpu')
+
+    def test_setup_cpu_device_does_not_raise(self):
+        """setup_cpu_device() must not raise regardless of IPEX availability."""
+        try:
+            setup_cpu_device()
+        except Exception as exc:
+            self.fail(f"setup_cpu_device() raised unexpectedly: {exc}")
+
+    def test_tensor_on_cpu_device(self):
+        """Tensors must be usable on the returned device."""
+        device = setup_cpu_device()
         t = torch.zeros(2, 2).to(device)
         self.assertEqual(t.shape, (2, 2))
-
-    def test_directml_availability_reported(self, capsys=None):
-        """get_device() must not raise even without torch_directml installed."""
-        try:
-            device = get_device()
-        except Exception as exc:
-            self.fail(f"get_device() raised unexpectedly: {exc}")
 
 
 # ============================================================
@@ -197,29 +201,25 @@ class TestPredictTiled(unittest.TestCase):
         model = train_n2v(
             model, SMALL_IMAGE,
             patch_size=64, batch_size=32, num_epochs=1,
-            device=torch.device('cpu'),
         )
         return model
 
     def test_output_shape_matches_input(self):
         model = self._trained_model()
         out = predict_tiled(model, SMALL_IMAGE,
-                            tile_size=(64, 64), tile_overlap=(8, 8),
-                            device=torch.device('cpu'))
+                            tile_size=(64, 64), tile_overlap=(8, 8))
         self.assertEqual(out.shape, SMALL_IMAGE.shape)
 
     def test_output_dtype_is_float32(self):
         model = self._trained_model()
         out = predict_tiled(model, SMALL_IMAGE,
-                            tile_size=(64, 64), tile_overlap=(8, 8),
-                            device=torch.device('cpu'))
+                            tile_size=(64, 64), tile_overlap=(8, 8))
         self.assertEqual(out.dtype, np.float32)
 
     def test_no_nan_or_inf_in_output(self):
         model = self._trained_model()
         out = predict_tiled(model, SMALL_IMAGE,
-                            tile_size=(64, 64), tile_overlap=(8, 8),
-                            device=torch.device('cpu'))
+                            tile_size=(64, 64), tile_overlap=(8, 8))
         self.assertFalse(np.isnan(out).any(), "NaN in output")
         self.assertFalse(np.isinf(out).any(), "Inf in output")
 
@@ -227,15 +227,13 @@ class TestPredictTiled(unittest.TestCase):
         model = _tiny_model()
         with self.assertRaises(AssertionError):
             predict_tiled(model, SMALL_IMAGE,
-                          tile_size=(256, 256), tile_overlap=(8, 8),
-                          device=torch.device('cpu'))
+                          tile_size=(256, 256), tile_overlap=(8, 8))
 
     def test_tile_size_not_divisible_by_8_raises(self):
         model = _tiny_model()
         with self.assertRaises(AssertionError):
             predict_tiled(model, SMALL_IMAGE,
-                          tile_size=(60, 64), tile_overlap=(8, 8),
-                          device=torch.device('cpu'))
+                          tile_size=(60, 64), tile_overlap=(8, 8))
 
 
 # ============================================================
@@ -250,50 +248,43 @@ def _dml_available() -> bool:
         return False
 
 
-@unittest.skipUnless(_dml_available(), "torch_directml not available")
-class TestDirectMLSmoke(unittest.TestCase):
+class TestIntelMKLSmoke(unittest.TestCase):
+    """CPU + MKL 基本 smoke test（無需 GPU，永遠執行）。"""
 
-    def test_model_forward_on_directml(self):
-        import torch_directml
-        device = torch_directml.device()
-        model = _tiny_model().to(device)
-        x = torch.zeros(1, 1, 64, 64).to(device)
+    def test_model_forward_on_cpu(self):
+        model = _tiny_model()
+        x = torch.zeros(1, 1, 64, 64)
         y = model(x)
         self.assertEqual(y.shape, (1, 1, 64, 64))
 
-    def test_predict_tiled_on_directml(self):
-        import torch_directml
-        device = torch_directml.device()
-        model = _tiny_model().to(device)
-        out = predict_tiled(model, SMALL_IMAGE,
-                            tile_size=(64, 64), tile_overlap=(8, 8),
-                            device=device)
-        self.assertEqual(out.shape, SMALL_IMAGE.shape)
-        self.assertFalse(np.isnan(out).any())
-
-    def test_training_one_epoch_on_directml(self):
-        import torch_directml
-        device = torch_directml.device()
+    def test_training_one_epoch_on_cpu(self):
         model = _tiny_model()
         t0 = time.time()
         model = train_n2v(
             model, SMALL_IMAGE,
             patch_size=64, batch_size=16, num_epochs=1,
-            device=device,
         )
         elapsed = time.time() - t0
-        print(f"\n  DirectML 1-epoch time: {elapsed:.2f}s")
+        print(f"\n  CPU (MKL) 1-epoch time: {elapsed:.2f}s")
         self.assertIsInstance(model, N2VUNet)
 
-    def test_pin_memory_false_for_directml(self):
-        """Ensure DataLoader does not use pin_memory with DirectML (would crash)."""
-        import torch_directml
+    def test_pin_memory_false_for_cpu(self):
+        """CPU 路徑下 pin_memory 必須為 False。"""
         from torch.utils.data import DataLoader
         ds = N2VDataset(SMALL_IMAGE, patch_size=64, num_patches=4)
-        # DirectML device.type is not 'cuda', so pin_memory should be False
-        device = torch_directml.device()
-        is_cuda = hasattr(device, 'type') and device.type == 'cuda'
-        self.assertFalse(is_cuda)
+        loader = DataLoader(ds, batch_size=4, pin_memory=False)
+        self.assertFalse(loader.pin_memory)
+
+    def test_ipex_import_does_not_crash(self):
+        """IPEX 未安裝時 apply_ipex 應靜默跳過，不 raise。"""
+        from denoise_torch_intel_mkl import apply_ipex
+        model = _tiny_model()
+        optimizer = optim.Adam(model.parameters())
+        try:
+            m, o = apply_ipex(model, optimizer)
+            self.assertIsNotNone(m)
+        except Exception as exc:
+            self.fail(f"apply_ipex() raised unexpectedly: {exc}")
 
 
 # ============================================================
@@ -312,26 +303,30 @@ class TestPerformanceBenchmark(unittest.TestCase):
 
     IMAGE = np.random.default_rng(1).random((256, 256), dtype=np.float32)
 
-    def _time_one_epoch(self, device) -> float:
+    def _time_one_epoch(self, **train_kwargs) -> float:
         model = _tiny_model()
         t0 = time.time()
-        train_n2v(model, self.IMAGE,
-                  patch_size=64, batch_size=32, num_epochs=1,
-                  device=device)
+        train_n2v(model, self.IMAGE, patch_size=64, batch_size=32, num_epochs=1,
+                  **train_kwargs)
         return time.time() - t0
 
-    def test_compare_cpu_vs_directml(self):
-        cpu_time = self._time_one_epoch(torch.device('cpu'))
-        print(f"\n  CPU  1-epoch: {cpu_time:.2f}s")
+    def test_cpu_mkl_baseline(self):
+        """CPU + MKL 單 epoch 時間基準。"""
+        cpu_time = self._time_one_epoch()
+        print(f"\n  CPU (MKL) 1-epoch: {cpu_time:.2f}s")
 
-        if _dml_available():
-            import torch_directml
-            dml_time = self._time_one_epoch(torch_directml.device())
-            print(f"  DML  1-epoch: {dml_time:.2f}s")
-            speedup = cpu_time / dml_time
-            print(f"  Speedup: {speedup:.2f}x ({'faster' if speedup > 1 else 'slower'} than CPU)")
-        else:
-            print("  DirectML not available — skipping DML benchmark")
+    def test_cpu_ipex_vs_plain(self):
+        """比較有無 IPEX 的速度差異（IPEX 未安裝時只印 plain 結果）。"""
+        plain_time = self._time_one_epoch()
+        print(f"\n  CPU plain  1-epoch: {plain_time:.2f}s")
+        try:
+            import intel_extension_for_pytorch  # noqa: F401
+            ipex_time = self._time_one_epoch()
+            speedup = plain_time / ipex_time
+            print(f"  CPU + IPEX 1-epoch: {ipex_time:.2f}s  "
+                  f"({speedup:.2f}x {'faster' if speedup > 1 else 'slower'})")
+        except ImportError:
+            print("  IPEX 未安裝，跳過比較")
 
 
 # ============================================================
