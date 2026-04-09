@@ -476,18 +476,22 @@ def save_outputs(
 # ============================================================
 
 def main(
-    image_path:   str             = "test_sem.tif",
     patch_size:   int             = 64,
     batch_size:   int             = 128,
     num_epochs:   int             = 100,
     tile_size:    Tuple[int, int] = (256, 256),
     tile_overlap: Tuple[int, int] = (48, 48),
 ) -> None:
+
+    # -- Here can edit input/output
+    input_path  = "test_sem.tif"
+    output_path = "denoised_sem_log_torch.tif"
+
     """Full Log + N2V pipeline: load -> log transform -> train -> predict -> expm1 -> save."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # 1. Load image (normalized to [0, 1], original range preserved)
-    image, img_min, img_max = load_sem_image(image_path)
+    image, img_min, img_max = load_sem_image(input_path)
     print(f"Image shape: {image.shape},  original range: [{img_min:.3f}, {img_max:.3f}]")
 
     # 1.5 Log transform: multiplicative speckle → additive noise in log domain
@@ -520,7 +524,7 @@ def main(
     print(f"Linear-domain denoised range: [{denoised_linear.min():.3f}, {denoised_linear.max():.3f}]")
 
     # 5. Save outputs (restores original pixel value range in .tif)
-    save_outputs(image, denoised_linear, img_min, img_max)
+    save_outputs(image, denoised_linear, img_min, img_max, tif_path=output_path)
 
 
 if __name__ == '__main__':

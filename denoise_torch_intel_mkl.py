@@ -435,17 +435,21 @@ def save_outputs(
 # ============================================================
 
 def main(
-    image_path:   str             = "test_sem.tif",
     patch_size:   int             = 64,
     batch_size:   int             = 32,
     num_epochs:   int             = 100,
     tile_size:    Tuple[int, int] = (256, 256),
     tile_overlap: Tuple[int, int] = (48, 48),
 ) -> None:
+
+    # -- Here can edit input/output
+    input_path  = "test_sem.tif"
+    output_path = "denoised_sem_intel_mkl.tif"
+
     """Full N2V pipeline: load -> train -> predict -> save."""
     device = setup_cpu_device()
 
-    image, img_min, img_max = load_sem_image(image_path)
+    image, img_min, img_max = load_sem_image(input_path)
     print(f"Image shape: {image.shape},  range: [{img_min:.3f}, {img_max:.3f}]")
 
     model = N2VUNet(in_channels=1, base_features=32)
@@ -466,7 +470,7 @@ def main(
         device=device,
     )
 
-    save_outputs(image, denoised, img_min, img_max)
+    save_outputs(image, denoised, img_min, img_max, tif_path=output_path)
 
 
 if __name__ == '__main__':

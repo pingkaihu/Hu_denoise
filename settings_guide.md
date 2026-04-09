@@ -210,3 +210,113 @@ struct_n2v_axis="horizontal"  # 或 "vertical"
 
 規則：patch_size 必須為 8 的倍數，且 < 影像邊長
 ```
+
+---
+
+## 參數機制詳解（`main()` / `train_n2v()`）
+
+### 訓練參數
+
+| 參數 | 預設值 | 機制 | 調整方向 |
+|---|---|---|---|
+| `patch_size` | 64 | 從原圖隨機裁出 N×N 小塊作訓練單位；決定網路能看到的上下文範圍 | 太小（<32）上下文不足；太大（>128）吃 VRAM |
+| `batch_size` | 128 | 每次梯度更新同時處理的 patch 數；影響梯度穩定性與速度 | 大 batch → 穩定但吃 VRAM；OOM 時減半 |
+| `num_epochs` | 100 | 訓練資料集被完整跑過的次數；結合 `patches_per_epoch=2000` 決定總更新次數 | 單張影像建議 100–200；太多可能過擬合噪聲 |
+| `tile_size` | (256,256) | 推論時切塊大小；越大邊界銜接越少但 VRAM 需求越高 | OOM 時：256→128→64 |
+| `tile_overlap` | (48,48) | 相鄰 tile 的重疊寬度（約 tile_size 的 20%）；防止邊界拼接痕跡 | 有格狀偽影時增加至 64–96 |
+
+### 進階參數（`train_n2v()` 專屬）
+
+#### `learning_rate = 4e-4`
+
+搭配 **Adam 優化器 + Cosine Annealing** 學習率排程：
+
+```python
+optimizer = optim.Adam(model.parameters(), lr=4e-4)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
+```
+
+學習率隨 epoch 從 `4e-4` 平滑衰減至 `1e-6`，避免後期震盪：
+
+```
+epoch   1 → lr ≈ 4e-4  (最大，快速學習)
+epoch  50 → lr ≈ 2e-4  (中段)
+epoch 100 → lr ≈ 1e-6  (最小，精細收斂)
+```
+
+- `4e-4` 是 N2V 社群驗證的經驗值，一般**不需調整**
+- 若 loss 震盪不收斂 → 減小至 `1e-4`；收斂過慢 → 增至 `8e-4`
+
+#### `val_percentage = 0.1`
+
+將 `patches_per_epoch=2000` 的 10% 劃為驗證集：
+
+```
+train patch：2000 × 0.9 = 1800  → 參與梯度更新
+val patch：  2000 × 0.1 =  200  → 只做前向傳播，不更新權重
+```
+
+- 驗證集用來監控 `val_loss` 趨勢，判斷是否過擬合
+- 注意：N2V 是自監督，train/val 皆來自同一張圖，`val_loss` 主要作趨勢參考
+
+### 參數間的量化關聯
+
+```
+patches_per_epoch = 2000（固定於 train_n2v() 內）
+    ├─ × val_percentage (0.1) → val:   200 patch
+    └─ × (1 − 0.1)           → train: 1800 patch
+                                      ÷ batch_size (128) → ~14 steps/epoch
+                                      × num_epochs (100) → ~1,400 次梯度更新
+                                                   learning_rate: cosine decay 4e-4 → 1e-6
+```
+
+---
+
+## 解讀訓練輸出
+
+執行 `denoise_torch.py` 時每 10 個 epoch 輸出一行：
+
+```
+Epoch [  1/100]  train_loss=0.337753  val_loss=0.299617  elapsed=2.1s
+Epoch [ 10/100]  train_loss=0.005203  val_loss=0.008156  elapsed=1.7s
+Epoch [ 20/100]  train_loss=0.003526  val_loss=0.003599  elapsed=1.7s
+```
+
+### `train_loss`
+
+訓練集上**被遮蔽像素**的 MSE（N2V 核心：遮住一個像素，用鄰居預測它）：
+
+```python
+loss = loss_fn(pred * mask, clean_tgt * mask)  # 只算 mask 位置的誤差
+```
+
+- 數值越低 = 網路預測越準確
+- Epoch 1 → 0.34：初始隨機預測；Epoch 10 → 0.005：快速收斂
+
+### `val_loss`
+
+驗證集上的相同 MSE，**不參與梯度更新**（`torch.no_grad()`）：
+
+| `val_loss` vs `train_loss` | 代表 |
+|---|---|
+| `val ≈ train` | 正常收斂，泛化良好（如 Epoch 20） |
+| `val >> train` | 過擬合（網路記住訓練 patch 的噪聲） |
+| `val` 持平但 `train` 仍下降 | 可考慮提早停止訓練 |
+
+### `elapsed`
+
+單一 epoch 耗時（train + validate 合計）：
+
+- 第 1 epoch 較慢（CUDA kernel 初始化），之後穩定
+- 總訓練時間估算：`elapsed × num_epochs`（如 1.7s × 100 ≈ 170s ≈ 3 分鐘）
+
+### 健康訓練的典型曲線
+
+```
+Epoch   1：loss 高（0.3+）  → 初始化，正常
+Epoch  10：loss 大幅下降   → GPU 加速發揮，快速學習
+Epoch  20：loss 趨穩，val ≈ train → 收斂健康
+Epoch 100：loss 極低且穩定  → 訓練完成
+```
+
+若 `train_loss` 在 Epoch 50 後仍持續下降但 `val_loss` 不降，考慮減少 `num_epochs` 或降低 `learning_rate`。
