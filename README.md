@@ -77,6 +77,8 @@ python test_directml.py --benchmark # CPU vs DirectML 效能比較
 | [guide.md](guide.md) | N2V 技術背景、原理說明、Noise2Noise 系列方法介紹 |
 | [denoise_comparison.md](denoise_comparison.md) | 去噪腳本的框架比較（演算法、速度、相依性、GPU 支援） |
 | [settings_guide.md](settings_guide.md) | N2V 參數調整指南（patch_size、batch_size、epochs），含 RTX 3080 時間估計 |
+| [speckle_denoising_strategy.md](speckle_denoising_strategy.md) | Speckle 乘性噪聲處理策略指南，基於 Noise2Noise 家族的理論分析與 Log 域轉換實作建議 |
+| [Speckle_vs_ShotNoise_Comparison.md](Speckle_vs_ShotNoise_Comparison.md) | Speckle 與 Shot Noise 去噪策略比較，含 N2N 家族理論分析與 SEM 實作指南 |
 | [debug_report.md](debug_report.md) | 常見錯誤排除紀錄（模組未安裝、GPU 設定等） |
 | [CLAUDE.md](CLAUDE.md) | 專案架構說明與 Claude Code 協作指引 |
 
