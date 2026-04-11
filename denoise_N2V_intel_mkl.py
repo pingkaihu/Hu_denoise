@@ -406,8 +406,8 @@ def save_outputs(
     denoised: np.ndarray,
     img_min:  float,
     img_max:  float,
-    tif_path: str = "denoised_sem_intel_mkl.tif",
-    png_path: str = "denoising_result_intel_mkl.png",
+    tif_path: str = "data/denoised_sem_intel_mkl.tif",
+    png_path: str = "data/denoising_result_intel_mkl.png",
 ) -> None:
     denoised_original = (denoised * (img_max - img_min) + img_min).astype(np.float32)
     tifffile.imwrite(tif_path, denoised_original)
@@ -443,8 +443,8 @@ def main(
 ) -> None:
 
     # -- Here can edit input/output
-    input_path  = "test_sem.tif"
-    output_path = "denoised_sem_intel_mkl.tif"
+    input_path  = "data/test_sem.tif"
+    output_path = "data/denoised_sem_intel_mkl.tif"
 
     """Full N2V pipeline: load -> train -> predict -> save."""
     device = setup_cpu_device()

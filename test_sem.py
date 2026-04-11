@@ -11,5 +11,7 @@ for _ in range(20):
     structure[((xx - x)**2 + (yy - y)**2) < r**2] = 1.0
 
 noisy = structure + rng.normal(0, 0.1, structure.shape).astype(np.float32)
-tifffile.imwrite("test_sem.tif", noisy)
-print("已產生 test_sem.tif")
+import os
+os.makedirs("data", exist_ok=True)
+tifffile.imwrite("data/test_sem.tif", noisy)
+print("已產生 data/test_sem.tif")

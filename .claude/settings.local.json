@@ -15,7 +15,14 @@
       "Bash(h:/Hu_denoise/venv/Scripts/python.exe -c \"import torch; print\\(''PyTorch:'', torch.__version__\\); print\\(''CUDA available:'', torch.cuda.is_available\\(\\)\\); print\\(''GPU:'', torch.cuda.get_device_name\\(0\\) if torch.cuda.is_available\\(\\) else ''N/A''\\)\")",
       "Bash(ls h:/Hu_denoise/*.py h:/Hu_denoise/*.md h:/Hu_denoise/.gitignore)",
       "WebSearch",
-      "Bash(ls -la /h/Hu_denoise/*.py)"
+      "Bash(ls -la /h/Hu_denoise/*.py)",
+      "Bash(ls h:/Hu_denoise/*.py)",
+      "Bash(ls h:/Hu_denoise/reference/*.pdf)",
+      "Bash(mv denoise.py denoise_N2V_careamics.py)",
+      "Bash(mv denoise_torch.py denoise_N2V.py)",
+      "Bash(mv denoise_log_torch.py denoise_log_N2V.py)",
+      "Bash(mv denoise_tf.py denoise_N2V_tf.py)",
+      "Bash(mv denoise_torch_intel_mkl.py denoise_N2V_intel_mkl.py)"
     ]
   }
 }

@@ -554,8 +554,8 @@ def save_outputs(
     denoised: np.ndarray,
     img_min:  float,
     img_max:  float,
-    tif_path: str = "denoised_apbsn.tif",
-    png_path: str = "denoising_apbsn_result.png",
+    tif_path: str = "data/denoised_apbsn.tif",
+    png_path: str = "data/denoising_apbsn_result.png",
 ) -> None:
     """Save denoised TIF (original value range) and side-by-side comparison PNG."""
     denoised_orig = (denoised * (img_max - img_min) + img_min).astype(np.float32)
@@ -589,8 +589,8 @@ def save_outputs(
 # ============================================================
 
 def main(
-    input_path:  str  = "test_sem.tif",
-    output_path: str  = "denoised_sem_apbsn.tif",
+    input_path:  str  = "data/test_sem.tif",
+    output_path: str  = "data/denoised_sem_apbsn.tif",
     pd_stride:   int  = 2,      # 2 = SEM pixel-indep. noise; 5 = camera sRGB
     patch_size:  int  = 64,     # spatial size in PD domain (= r * patch_size orig. px)
     batch_size:  int  = 64,
@@ -650,7 +650,7 @@ def main(
     save_outputs(
         image, denoised, img_min, img_max,
         tif_path=output_path,
-        png_path="denoising_apbsn_result.png",
+        png_path="data/denoising_apbsn_result.png",
     )
 
 

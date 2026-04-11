@@ -440,8 +440,8 @@ def save_outputs(
     denoised: np.ndarray,
     img_min:  float,
     img_max:  float,
-    tif_path: str = "denoised_sem_log_torch.tif",
-    png_path: str = "denoising_log_result.png",
+    tif_path: str = "data/denoised_sem_log_torch.tif",
+    png_path: str = "data/denoising_log_result.png",
 ) -> None:
     """Save denoised TIF (original value range) and side-by-side comparison PNG."""
     # Restore original grayscale range before saving
@@ -484,8 +484,8 @@ def main(
 ) -> None:
 
     # -- Here can edit input/output
-    input_path  = "test_sem.tif"
-    output_path = "denoised_sem_log_torch.tif"
+    input_path  = "data/test_sem.tif"
+    output_path = "data/denoised_sem_log_torch.tif"
 
     """Full Log + N2V pipeline: load -> log transform -> train -> predict -> expm1 -> save."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

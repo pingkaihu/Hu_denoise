@@ -46,7 +46,7 @@ if __name__ == '__main__':
     from careamics.lightning import create_train_datamodule
 
     # 讀取影像
-    image_path = "test_sem.tif"
+    image_path = "data/test_sem.tif"
     image, img_min, img_max = load_sem_image(image_path)
     print(f"影像尺寸: {image.shape}, 原始範圍: [{img_min:.3f}, {img_max:.3f}]")
 
@@ -108,8 +108,8 @@ if __name__ == '__main__':
     # ============================================================
     # 5. 儲存結果
     # ============================================================
-    tifffile.imwrite("denoised_sem.tif", denoised_original)
-    print(f"已儲存至 denoised_sem.tif，輸出範圍: [{denoised_original.min():.3f}, {denoised_original.max():.3f}]")
+    tifffile.imwrite("data/denoised_sem.tif", denoised_original)
+    print(f"已儲存至 data/denoised_sem.tif，輸出範圍: [{denoised_original.min():.3f}, {denoised_original.max():.3f}]")
 
 
     # ============================================================
@@ -131,6 +131,6 @@ if __name__ == '__main__':
     ax[2].axis('off')
 
     plt.tight_layout()
-    plt.savefig("denoising_result.png", dpi=150)
+    plt.savefig("data/denoising_result.png", dpi=150)
     plt.show()
 
