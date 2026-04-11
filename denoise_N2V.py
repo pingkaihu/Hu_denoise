@@ -443,7 +443,7 @@ def main(
     
     # -- Here can edit input/output
     input_path = "data/test_sem.tif"
-    output_path = "data/denoised_sem_torch.tif"
+    output_path = "data/denoised_sem_N2V.tif"
 
     """Full N2V pipeline: load -> train -> predict -> save."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
