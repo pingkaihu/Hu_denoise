@@ -1,10 +1,14 @@
 # ============================================================
-# SEM Image Denoising — Noise2Void (pure PyTorch, no careamics)
+# SEM Image Denoising — Noise2Void v2 (pure PyTorch)
+# Optimizations over denoise_N2V.py:
+#   1. Vectorized blind-spot masking  (CPU bottleneck removed)
+#   2. Batched tiled inference        (GPU utilization improved)
+#   4. Reflection padding in predict  (small/odd-size images handled)
 # ============================================================
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 # Usage:
-#   python test_sem.py          # generate synthetic test image
-#   python denoise_torch.py     # train + denoise -> denoised_sem.tif
+#   python test_sem.py       # generate synthetic test image
+#   python denoise_N2V_v2.py # train + denoise -> denoised_sem_N2V_v2.tif
 # ============================================================
 
 import os
@@ -12,7 +16,7 @@ os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
 
 import time
-from typing import Tuple
+from typing import List, Tuple
 
 import numpy as np
 import tifffile
@@ -27,7 +31,7 @@ torch.set_float32_matmul_precision('high')  # 啟用 Tensor Core，提升 RTX �
 
 
 # ============================================================
-# 1. Image Loading  (identical to denoise.py)
+# 1. Image Loading
 # ============================================================
 
 def load_sem_image(path: str) -> Tuple[np.ndarray, float, float]:
@@ -35,23 +39,19 @@ def load_sem_image(path: str) -> Tuple[np.ndarray, float, float]:
     Also returns original min/max for restoring pixel values after denoising."""
     img = tifffile.imread(path).astype(np.float32)
 
-    # Convert RGB to grayscale if needed
     if img.ndim == 3 and img.shape[-1] == 3:
         img = img @ np.array([0.2989, 0.5870, 0.1140])
 
-    # Preserve original range, normalize to [0, 1]
     img_min, img_max = float(img.min()), float(img.max())
     img = (img - img_min) / (img_max - img_min + 1e-8)
     return img, img_min, img_max
 
 
 # ============================================================
-# 2. UNet Architecture
+# 2. UNet Architecture  (unchanged)
 # ============================================================
 
 class DoubleConvBlock(nn.Module):
-    """Two sequential Conv2d -> BatchNorm2d -> LeakyReLU(0.1) operations."""
-
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
         self.block = nn.Sequential(
@@ -81,72 +81,63 @@ class N2VUNet(nn.Module):
 
     def __init__(self, in_channels: int = 1, base_features: int = 32):
         super().__init__()
-        f = base_features  # 32
+        f = base_features
 
-        # Encoder
-        self.enc1 = DoubleConvBlock(in_channels, f)      # -> (B, 32,  H,    W)
-        self.enc2 = DoubleConvBlock(f,     f * 2)        # -> (B, 64,  H/2,  W/2)
-        self.enc3 = DoubleConvBlock(f * 2, f * 4)        # -> (B, 128, H/4,  W/4)
-        self.enc4 = DoubleConvBlock(f * 4, f * 8)        # -> (B, 256, H/8,  W/8) bottleneck
+        self.enc1 = DoubleConvBlock(in_channels, f)
+        self.enc2 = DoubleConvBlock(f,     f * 2)
+        self.enc3 = DoubleConvBlock(f * 2, f * 4)
+        self.enc4 = DoubleConvBlock(f * 4, f * 8)
         self.pool = nn.MaxPool2d(2)
 
-        # Decoder — each up block: upsample + 1x1 conv to halve channels, then concat+DoubleConv
         self.up3  = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Conv2d(f * 8, f * 4, kernel_size=1),
         )
-        self.dec3 = DoubleConvBlock(f * 8, f * 4)       # input: cat(up3, enc3) = 128+128
+        self.dec3 = DoubleConvBlock(f * 8, f * 4)
 
         self.up2  = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Conv2d(f * 4, f * 2, kernel_size=1),
         )
-        self.dec2 = DoubleConvBlock(f * 4, f * 2)       # input: cat(up2, enc2) = 64+64
+        self.dec2 = DoubleConvBlock(f * 4, f * 2)
 
         self.up1  = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Conv2d(f * 2, f, kernel_size=1),
         )
-        self.dec1 = DoubleConvBlock(f * 2, f)           # input: cat(up1, enc1) = 32+32
+        self.dec1 = DoubleConvBlock(f * 2, f)
 
-        # Output head — no activation (regression)
         self.head = nn.Conv2d(f, in_channels, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Encoder
-        e1 = self.enc1(x)                                # (B, 32,  H,   W)
-        e2 = self.enc2(self.pool(e1))                    # (B, 64,  H/2, W/2)
-        e3 = self.enc3(self.pool(e2))                    # (B, 128, H/4, W/4)
-        e4 = self.enc4(self.pool(e3))                    # (B, 256, H/8, W/8)
+        e1 = self.enc1(x)
+        e2 = self.enc2(self.pool(e1))
+        e3 = self.enc3(self.pool(e2))
+        e4 = self.enc4(self.pool(e3))
 
-        # Decoder with skip connections
-        d3 = self.dec3(torch.cat([self.up3(e4), e3], dim=1))  # (B, 128, H/4, W/4)
-        d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1))  # (B, 64,  H/2, W/2)
-        d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))  # (B, 32,  H,   W)
+        d3 = self.dec3(torch.cat([self.up3(e4), e3], dim=1))
+        d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1))
+        d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))
 
-        return self.head(d1)                              # (B, 1,   H,   W)
+        return self.head(d1)
 
 
 # ============================================================
-# 3. N2V Dataset with Blind-Spot Masking
+# 3. N2V Dataset — Optimization 1: Vectorized Masking
 # ============================================================
 
 class N2VDataset(Dataset):
     """
     Extracts random patches from a single image with N2V blind-spot masking.
 
-    Each masked pixel is replaced by a randomly sampled neighbor value
-    (NOT zeros) — this is the key N2V trick that prevents the network from
-    learning the identity mapping.
+    Optimization 1 vs denoise_N2V.py:
+        _apply_n2v_masking now uses fully vectorized NumPy operations instead
+        of a Python for/while loop, eliminating the CPU bottleneck that caused
+        low GPU utilization during training.
 
-    Parameters
-    ----------
-    image          : (H, W) float32 array, range [0, 1]
-    patch_size     : side length of square patches (must be divisible by 8)
-    num_patches    : virtual epoch size (patches re-sampled each epoch)
-    mask_ratio     : fraction of pixels masked per patch (default 0.006)
-    neighbor_radius: half-width of the neighborhood window for replacement values
-    rng_seed       : seed for reproducibility
+        The (0,0) self-replacement guard is handled by randomly nudging either
+        dr or dc (chosen per-pixel) so the corrected offset distribution is
+        symmetric in both axes rather than always biasing toward vertical.
     """
 
     def __init__(
@@ -176,15 +167,12 @@ class N2VDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         P = self.patch_size
 
-        # Sample a random patch
         r0 = self.rng.integers(0, self.H - P)
         c0 = self.rng.integers(0, self.W - P)
-        patch = self.image[r0:r0 + P, c0:c0 + P].copy()  # (P, P)
+        patch = self.image[r0:r0 + P, c0:c0 + P].copy()
 
-        # Apply N2V masking
         corrupted, mask = self._apply_n2v_masking(patch)
 
-        # Shape: (1, P, P) float32
         return (
             torch.from_numpy(corrupted).unsqueeze(0),
             torch.from_numpy(patch).unsqueeze(0),
@@ -195,40 +183,47 @@ class N2VDataset(Dataset):
         self, patch: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Replace n_masked random pixels with randomly sampled neighbor values.
+        Vectorized N2V blind-spot masking.
 
-        Returns (corrupted_patch, binary_mask) — mask is 1.0 at masked positions.
+        All n_masked pixels are processed simultaneously via NumPy array ops.
+        (0,0) self-replacement guard: when an offset lands on (0,0), we randomly
+        nudge dr OR dc by ±1 (chosen per collision) to keep the offset
+        distribution symmetric rather than always biasing one axis.
         """
-        P = self.patch_size
+        P   = self.patch_size
+        rad = self.neighbor_radius
+
         corrupted = patch.copy()
         mask      = np.zeros((P, P), dtype=np.float32)
 
-        # Choose unique pixel positions to mask (flat index, then unravel)
-        flat_idx = self.rng.choice(P * P, size=self.n_masked, replace=False)
+        flat_idx  = self.rng.choice(P * P, size=self.n_masked, replace=False)
         rows, cols = np.unravel_index(flat_idx, (P, P))
 
-        rad = self.neighbor_radius
-        # Pre-compute list of valid non-zero offsets to avoid the while-loop overhead
-        dr_choices = np.arange(-rad, rad + 1)
-        dc_choices = np.arange(-rad, rad + 1)
+        # --- Vectorized offset sampling ---
+        dr = self.rng.integers(-rad, rad + 1, size=self.n_masked)
+        dc = self.rng.integers(-rad, rad + 1, size=self.n_masked)
 
-        for r, c in zip(rows, cols):
-            # Sample random offset, excluding (0, 0)
-            while True:
-                dr = int(self.rng.choice(dr_choices))
-                dc = int(self.rng.choice(dc_choices))
-                if dr != 0 or dc != 0:
-                    break
-            nr = int(np.clip(r + dr, 0, P - 1))
-            nc = int(np.clip(c + dc, 0, P - 1))
-            corrupted[r, c] = patch[nr, nc]
-            mask[r, c]      = 1.0
+        # Guard: fix any (dr, dc) == (0, 0) to avoid self-replacement
+        zero_mask = (dr == 0) & (dc == 0)
+        if np.any(zero_mask):
+            n_fix = int(np.sum(zero_mask))
+            # Randomly choose per-collision whether to shift dr or dc
+            shift_dr = self.rng.integers(0, 2, size=n_fix).astype(bool)
+            sign     = self.rng.choice([-1, 1], size=n_fix)
+            dr[zero_mask] = np.where(shift_dr,  sign, 0)
+            dc[zero_mask] = np.where(~shift_dr, sign, 0)
+
+        nr = np.clip(rows + dr, 0, P - 1)
+        nc = np.clip(cols + dc, 0, P - 1)
+
+        corrupted[rows, cols] = patch[nr, nc]
+        mask[rows, cols]      = 1.0
 
         return corrupted, mask
 
 
 # ============================================================
-# 4. Training Loop
+# 4. Training Loop  (unchanged)
 # ============================================================
 
 def train_n2v(
@@ -241,10 +236,7 @@ def train_n2v(
     val_percentage: float = 0.1,
     device: torch.device  = None,
 ) -> nn.Module:
-    """
-    Self-supervised N2V training on a single image.
-    Loss is MSE computed only at masked pixel positions.
-    """
+    """Self-supervised N2V training on a single image."""
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -257,7 +249,6 @@ def train_n2v(
     train_ds = N2VDataset(image, patch_size=patch_size, num_patches=n_train, rng_seed=42)
     val_ds   = N2VDataset(image, patch_size=patch_size, num_patches=n_val,   rng_seed=99)
 
-    # num_workers=0 is required on Windows to avoid multiprocessing issues
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               num_workers=0, pin_memory=(device.type == 'cuda'))
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
@@ -275,7 +266,6 @@ def train_n2v(
     for epoch in range(1, num_epochs + 1):
         t0 = time.time()
 
-        # --- Train ---
         model.train()
         tr_loss, tr_count = 0.0, 0
         for noisy_in, clean_tgt, mask in train_loader:
@@ -285,8 +275,6 @@ def train_n2v(
 
             optimizer.zero_grad()
             pred = model(noisy_in)
-
-            # Loss only at masked positions
             loss = loss_fn(pred * mask, clean_tgt * mask)
             loss.backward()
             optimizer.step()
@@ -294,7 +282,6 @@ def train_n2v(
             tr_loss  += loss.item()
             tr_count += mask.sum().item()
 
-        # --- Validate ---
         model.eval()
         vl_loss, vl_count = 0.0, 0
         with torch.no_grad():
@@ -320,77 +307,132 @@ def train_n2v(
 
 
 # ============================================================
-# 5. Tiled Inference with Hann-Window Blending
+# 5. Tiled Inference — Optimization 2 (Batched) + 4 (Padding)
 # ============================================================
+
+def _compute_padding(image_size: int, tile_size: int) -> int:
+    """
+    Return the amount of reflection padding needed on one axis.
+
+    Two concerns, handled independently:
+      a) If image < tile, pad up to tile_size so at least one tile fits.
+      b) Always ensure the padded dimension is divisible by 8 (UNet requirement
+         when the whole padded axis is processed in a single tile pass).
+
+    Note: concerns (a) and (b) are computed on the already-padded size to avoid
+    the off-by-one bug where only one axis triggers (b).
+    """
+    pad = max(0, tile_size - image_size)
+    padded = image_size + pad
+    remainder = padded % 8
+    if remainder != 0:
+        pad += 8 - remainder
+    return pad
+
 
 def predict_tiled(
     model: nn.Module,
     image: np.ndarray,
-    tile_size:    Tuple[int, int] = (256, 256),
-    tile_overlap: Tuple[int, int] = (48, 48),
-    device: torch.device          = None,
+    tile_size:       Tuple[int, int] = (256, 256),
+    tile_overlap:    Tuple[int, int] = (48, 48),
+    infer_batch_size: int            = 8,
+    device: torch.device             = None,
 ) -> np.ndarray:
     """
     Run inference on large images by processing overlapping tiles.
     Overlapping regions are blended using a 2D Hann window to avoid seams.
 
-    Returns denoised image as float32 (H, W).
+    Optimization 4 — Reflection Padding:
+        Images smaller than tile_size (or with dimensions not divisible by 8)
+        are padded with reflect mode before inference and cropped afterward.
+        Padding is computed per-axis independently so that the multiple-of-8
+        alignment is always applied regardless of which axis needed tile padding.
+
+    Optimization 2 — Batched GPU Inference:
+        All tile coordinates are collected upfront. Tiles are stacked into
+        batches of `infer_batch_size` and sent to the GPU in one forward pass,
+        maximising CUDA occupancy and minimising CPU-GPU transfer overhead.
+        The Hann-window blending is applied on CPU after each batch completes.
+
+    Returns denoised image as float32 (H, W) — same shape as input.
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    H, W      = image.shape
-    th, tw    = tile_size
-    oh, ow    = tile_overlap
-    stride_h  = th - oh
-    stride_w  = tw - ow
+    H, W   = image.shape
+    th, tw = tile_size
+    oh, ow = tile_overlap
 
-    assert th <= H and tw <= W, \
-        f"tile_size {tile_size} must be <= image size {image.shape}"
     assert th % 8 == 0 and tw % 8 == 0, \
         f"tile_size dimensions must be divisible by 8, got {tile_size}"
+    assert oh < th and ow < tw, \
+        f"tile_overlap {tile_overlap} must be smaller than tile_size {tile_size}"
+
+    # --- Optimization 4: Reflection padding (per-axis, independent) ---
+    pad_h = _compute_padding(H, th)
+    pad_w = _compute_padding(W, tw)
+
+    if pad_h > 0 or pad_w > 0:
+        padded = np.pad(image, ((0, pad_h), (0, pad_w)), mode='reflect')
+    else:
+        padded = image
+
+    pH, pW = padded.shape
+    stride_h = th - oh
+    stride_w = tw - ow
 
     # 2D Hann window for weighted blending
     hann_h  = torch.hann_window(th, periodic=False).numpy()
     hann_w  = torch.hann_window(tw, periodic=False).numpy()
-    hann_2d = np.outer(hann_h, hann_w)               # (th, tw)
+    hann_2d = np.outer(hann_h, hann_w)                    # (th, tw)
 
-    output_sum = np.zeros((H, W), dtype=np.float64)
-    weight_sum = np.zeros((H, W), dtype=np.float64)
+    output_sum = np.zeros((pH, pW), dtype=np.float64)
+    weight_sum = np.zeros((pH, pW), dtype=np.float64)
 
-    # Build tile origin lists, ensuring the last tile reaches the image edge
-    row_starts = list(range(0, H - th + 1, stride_h))
-    col_starts = list(range(0, W - tw + 1, stride_w))
-    if row_starts[-1] + th < H:
-        row_starts.append(H - th)
-    if col_starts[-1] + tw < W:
-        col_starts.append(W - tw)
+    # Build tile origin lists, ensuring the last tile reaches the padded edge
+    row_starts: List[int] = list(range(0, pH - th + 1, stride_h))
+    col_starts: List[int] = list(range(0, pW - tw + 1, stride_w))
+    if row_starts[-1] + th < pH:
+        row_starts.append(pH - th)
+    if col_starts[-1] + tw < pW:
+        col_starts.append(pW - tw)
 
-    total_tiles = len(row_starts) * len(col_starts)
+    coords = [(r0, c0) for r0 in row_starts for c0 in col_starts]
+    total_tiles = len(coords)
     processed   = 0
 
+    # --- Optimization 2: Batched GPU inference ---
     model.eval()
     with torch.no_grad():
-        for r0 in row_starts:
-            for c0 in col_starts:
-                tile_np = image[r0:r0 + th, c0:c0 + tw]
-                tile_t  = torch.from_numpy(tile_np).unsqueeze(0).unsqueeze(0).to(device)
+        for i in range(0, total_tiles, infer_batch_size):
+            batch_coords = coords[i:i + infer_batch_size]
 
-                pred_np = model(tile_t).squeeze().cpu().numpy()
+            # Stack tiles -> (B, 1, th, tw)
+            tiles   = [padded[r0:r0 + th, c0:c0 + tw] for (r0, c0) in batch_coords]
+            batch_t = torch.from_numpy(np.stack(tiles)).unsqueeze(1).to(device)
 
-                output_sum[r0:r0 + th, c0:c0 + tw] += pred_np.astype(np.float64) * hann_2d
+            # Single GPU forward pass for the whole batch
+            preds = model(batch_t).squeeze(1).cpu().numpy()  # (B, th, tw)
+
+            # Accumulate each tile's prediction with Hann-window weight
+            for j, (r0, c0) in enumerate(batch_coords):
+                output_sum[r0:r0 + th, c0:c0 + tw] += preds[j].astype(np.float64) * hann_2d
                 weight_sum[r0:r0 + th, c0:c0 + tw] += hann_2d
 
-                processed += 1
-                if processed % 10 == 0 or processed == total_tiles:
-                    print(f"  Inference: {processed}/{total_tiles} tiles")
+            processed = min(i + infer_batch_size, total_tiles)
+            if processed % max(infer_batch_size, total_tiles // 5 or 1) == 0 \
+                    or processed == total_tiles:
+                print(f"  Inference: {processed}/{total_tiles} tiles")
 
-    denoised = (output_sum / np.maximum(weight_sum, 1e-8)).astype(np.float32)
+    denoised_pad = (output_sum / np.maximum(weight_sum, 1e-8)).astype(np.float32)
+
+    # Crop back to original image dimensions (remove reflection padding)
+    denoised = denoised_pad[:H, :W]
     return denoised
 
 
 # ============================================================
-# 6. Save Outputs
+# 6. Save Outputs  (unchanged)
 # ============================================================
 
 def save_outputs(
@@ -398,16 +440,14 @@ def save_outputs(
     denoised: np.ndarray,
     img_min:  float,
     img_max:  float,
-    tif_path: str = "data/denoised_sem_torch.tif",
-    png_path: str = "data/denoising_result.png",
+    tif_path: str = "data/denoised_sem_N2V_v2.tif",
+    png_path: str = "data/denoising_result_v2.png",
 ) -> None:
     """Save denoised TIF (original value range) and side-by-side comparison PNG."""
-    # Restore original grayscale range before saving
     denoised_original = (denoised * (img_max - img_min) + img_min).astype(np.float32)
     tifffile.imwrite(tif_path, denoised_original)
     print(f"Saved: {tif_path},  range: [{denoised_original.min():.3f}, {denoised_original.max():.3f}]")
 
-    # Visualization uses normalized [0, 1] values
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
     axes[0].imshow(image,    cmap='gray')
@@ -415,7 +455,7 @@ def save_outputs(
     axes[0].axis('off')
 
     axes[1].imshow(denoised, cmap='gray')
-    axes[1].set_title('N2V Denoised')
+    axes[1].set_title('N2V Denoised (v2)')
     axes[1].axis('off')
 
     diff = np.abs(image - denoised) * 3
@@ -434,28 +474,23 @@ def save_outputs(
 # ============================================================
 
 def main(
-    patch_size:   int             = 64,
-    batch_size:   int             = 128,
-    num_epochs:   int             = 100,
-    tile_size:    Tuple[int, int] = (256, 256),
-    tile_overlap: Tuple[int, int] = (48, 48),
+    patch_size:       int             = 64,
+    batch_size:       int             = 128,
+    num_epochs:       int             = 100,
+    tile_size:        Tuple[int, int] = (256, 256),
+    tile_overlap:     Tuple[int, int] = (48, 48),
+    infer_batch_size: int             = 8,
 ) -> None:
-    
-    # -- Here can edit input/output
-    input_path = "data/test_sem.tif"
-    output_path = "data/denoised_sem_N2V.tif"
+    input_path  = "data/test_sem.tif"
+    output_path = "data/denoised_sem_N2V_v2.tif"
 
-    """Full N2V pipeline: load -> train -> predict -> save."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # 1. Load image
     image, img_min, img_max = load_sem_image(input_path)
     print(f"Image shape: {image.shape},  range: [{img_min:.3f}, {img_max:.3f}]")
 
-    # 2. Build model
     model = N2VUNet(in_channels=1, base_features=32)
 
-    # 3. Train
     model = train_n2v(
         model, image,
         patch_size=patch_size,
@@ -464,16 +499,15 @@ def main(
         device=device,
     )
 
-    # 4. Tiled inference
     print("\nRunning tiled inference...")
     denoised = predict_tiled(
         model, image,
         tile_size=tile_size,
         tile_overlap=tile_overlap,
+        infer_batch_size=infer_batch_size,
         device=device,
     )
 
-    # 5. Save outputs
     save_outputs(image, denoised, img_min, img_max, tif_path=output_path)
 
 

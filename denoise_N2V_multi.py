@@ -204,27 +204,31 @@ class MultiImageN2VDataset(Dataset):
     def _apply_n2v_masking(
         self, patch: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
-        P         = self.patch_size
+        P   = self.patch_size
+        rad = self.neighbor_radius
+
         corrupted = patch.copy()
         mask      = np.zeros((P, P), dtype=np.float32)
 
         flat_idx   = self.rng.choice(P * P, size=self.n_masked, replace=False)
         rows, cols = np.unravel_index(flat_idx, (P, P))
 
-        rad        = self.neighbor_radius
-        dr_choices = np.arange(-rad, rad + 1)
-        dc_choices = np.arange(-rad, rad + 1)
+        dr = self.rng.integers(-rad, rad + 1, size=self.n_masked)
+        dc = self.rng.integers(-rad, rad + 1, size=self.n_masked)
 
-        for r, c in zip(rows, cols):
-            while True:
-                dr = int(self.rng.choice(dr_choices))
-                dc = int(self.rng.choice(dc_choices))
-                if dr != 0 or dc != 0:
-                    break
-            nr = int(np.clip(r + dr, 0, P - 1))
-            nc = int(np.clip(c + dc, 0, P - 1))
-            corrupted[r, c] = patch[nr, nc]
-            mask[r, c]      = 1.0
+        zero_mask = (dr == 0) & (dc == 0)
+        if np.any(zero_mask):
+            n_fix    = int(np.sum(zero_mask))
+            shift_dr = self.rng.integers(0, 2, size=n_fix).astype(bool)
+            sign     = self.rng.choice([-1, 1], size=n_fix)
+            dr[zero_mask] = np.where(shift_dr,  sign, 0)
+            dc[zero_mask] = np.where(~shift_dr, sign, 0)
+
+        nr = np.clip(rows + dr, 0, P - 1)
+        nc = np.clip(cols + dc, 0, P - 1)
+
+        corrupted[rows, cols] = patch[nr, nc]
+        mask[rows, cols]      = 1.0
 
         return corrupted, mask
 
@@ -319,64 +323,103 @@ def train_n2v_multi(
 
 
 # ============================================================
-# 5. Tiled Inference with Hann-Window Blending
+# 5. Tiled Inference — Opt 2 (Batched) + Opt 4 (Reflection Padding)
 # ============================================================
+
+def _compute_padding(image_size: int, tile_size: int) -> int:
+    """Return reflection padding needed on one axis (per-axis, independent)."""
+    pad = max(0, tile_size - image_size)
+    padded = image_size + pad
+    remainder = padded % 8
+    if remainder != 0:
+        pad += 8 - remainder
+    return pad
+
 
 def predict_tiled(
     model: nn.Module,
     image: np.ndarray,
-    tile_size:    Tuple[int, int] = (256, 256),
-    tile_overlap: Tuple[int, int] = (48, 48),
-    device: torch.device          = None,
+    tile_size:        Tuple[int, int] = (256, 256),
+    tile_overlap:     Tuple[int, int] = (48, 48),
+    infer_batch_size: int             = 8,
+    device: torch.device              = None,
 ) -> np.ndarray:
-    """Tiled inference with Hann-window blending to avoid seams."""
+    """
+    Tiled inference with Hann-window blending to avoid seams.
+
+    Opt 4 — Reflection Padding:
+        Images smaller than tile_size are padded per-axis independently,
+        fixing the if-condition bug where one axis misses divisible-by-8 alignment.
+
+    Opt 2 — Batched GPU Inference:
+        Tiles are stacked into batches of `infer_batch_size` for one forward pass,
+        maximising CUDA occupancy.
+
+    Returns denoised image as float32 (H, W) — same shape as input.
+    """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    H, W     = image.shape
-    th, tw   = tile_size
-    oh, ow   = tile_overlap
-    stride_h = th - oh
-    stride_w = tw - ow
+    H, W   = image.shape
+    th, tw = tile_size
+    oh, ow = tile_overlap
 
-    assert th <= H and tw <= W, \
-        f"tile_size {tile_size} must be <= image size {image.shape}"
     assert th % 8 == 0 and tw % 8 == 0, \
         f"tile_size dimensions must be divisible by 8, got {tile_size}"
+    assert oh < th and ow < tw, \
+        f"tile_overlap {tile_overlap} must be smaller than tile_size {tile_size}"
+
+    # Opt 4: Reflection padding (per-axis, independent)
+    pad_h = _compute_padding(H, th)
+    pad_w = _compute_padding(W, tw)
+
+    if pad_h > 0 or pad_w > 0:
+        padded = np.pad(image, ((0, pad_h), (0, pad_w)), mode='reflect')
+    else:
+        padded = image
+
+    pH, pW   = padded.shape
+    stride_h = th - oh
+    stride_w = tw - ow
 
     hann_h  = torch.hann_window(th, periodic=False).numpy()
     hann_w  = torch.hann_window(tw, periodic=False).numpy()
     hann_2d = np.outer(hann_h, hann_w)
 
-    output_sum = np.zeros((H, W), dtype=np.float64)
-    weight_sum = np.zeros((H, W), dtype=np.float64)
+    output_sum = np.zeros((pH, pW), dtype=np.float64)
+    weight_sum = np.zeros((pH, pW), dtype=np.float64)
 
-    row_starts = list(range(0, H - th + 1, stride_h))
-    col_starts = list(range(0, W - tw + 1, stride_w))
-    if row_starts[-1] + th < H:
-        row_starts.append(H - th)
-    if col_starts[-1] + tw < W:
-        col_starts.append(W - tw)
+    row_starts: List[int] = list(range(0, pH - th + 1, stride_h))
+    col_starts: List[int] = list(range(0, pW - tw + 1, stride_w))
+    if row_starts[-1] + th < pH:
+        row_starts.append(pH - th)
+    if col_starts[-1] + tw < pW:
+        col_starts.append(pW - tw)
 
-    total_tiles = len(row_starts) * len(col_starts)
+    coords      = [(r0, c0) for r0 in row_starts for c0 in col_starts]
+    total_tiles = len(coords)
     processed   = 0
 
+    # Opt 2: Batched GPU inference
     model.eval()
     with torch.no_grad():
-        for r0 in row_starts:
-            for c0 in col_starts:
-                tile_np = image[r0:r0 + th, c0:c0 + tw]
-                tile_t  = torch.from_numpy(tile_np).unsqueeze(0).unsqueeze(0).to(device)
-                pred_np = model(tile_t).squeeze().cpu().numpy()
+        for i in range(0, total_tiles, infer_batch_size):
+            batch_coords = coords[i:i + infer_batch_size]
+            tiles   = [padded[r0:r0 + th, c0:c0 + tw] for (r0, c0) in batch_coords]
+            batch_t = torch.from_numpy(np.stack(tiles)).unsqueeze(1).to(device)
+            preds   = model(batch_t).squeeze(1).cpu().numpy()
 
-                output_sum[r0:r0 + th, c0:c0 + tw] += pred_np.astype(np.float64) * hann_2d
+            for j, (r0, c0) in enumerate(batch_coords):
+                output_sum[r0:r0 + th, c0:c0 + tw] += preds[j].astype(np.float64) * hann_2d
                 weight_sum[r0:r0 + th, c0:c0 + tw] += hann_2d
 
-                processed += 1
-                if processed % 20 == 0 or processed == total_tiles:
-                    print(f"    tiles: {processed}/{total_tiles}")
+            processed = min(i + infer_batch_size, total_tiles)
+            if processed % max(infer_batch_size, total_tiles // 5 or 1) == 0 \
+                    or processed == total_tiles:
+                print(f"    tiles: {processed}/{total_tiles}")
 
-    return (output_sum / np.maximum(weight_sum, 1e-8)).astype(np.float32)
+    denoised_pad = (output_sum / np.maximum(weight_sum, 1e-8)).astype(np.float32)
+    return denoised_pad[:H, :W]
 
 
 # ============================================================

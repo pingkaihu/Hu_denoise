@@ -297,22 +297,29 @@ class MultiImageAPBSNDataset(Dataset):
         corrupted: np.ndarray,
         mask:      np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
+        """Vectorized blind-spot masking; all r² channels masked simultaneously."""
         P   = self.patch_size
         rad = self.neighbor_radius
 
         flat_idx   = self.rng.choice(P * P, size=self.n_masked, replace=False)
         rows, cols = np.unravel_index(flat_idx, (P, P))
 
-        for row, col in zip(rows, cols):
-            while True:
-                dr = int(self.rng.integers(-rad, rad + 1))
-                dc = int(self.rng.integers(-rad, rad + 1))
-                if dr != 0 or dc != 0:
-                    break
-            nr = int(np.clip(row + dr, 0, P - 1))
-            nc = int(np.clip(col + dc, 0, P - 1))
-            corrupted[:, row, col] = target[:, nr, nc]  # all r² channels together
-            mask[row, col]         = 1.0
+        dr = self.rng.integers(-rad, rad + 1, size=self.n_masked)
+        dc = self.rng.integers(-rad, rad + 1, size=self.n_masked)
+
+        zero_mask = (dr == 0) & (dc == 0)
+        if np.any(zero_mask):
+            n_fix    = int(np.sum(zero_mask))
+            shift_dr = self.rng.integers(0, 2, size=n_fix).astype(bool)
+            sign     = self.rng.choice([-1, 1], size=n_fix)
+            dr[zero_mask] = np.where(shift_dr,  sign, 0)
+            dc[zero_mask] = np.where(~shift_dr, sign, 0)
+
+        nr = np.clip(rows + dr, 0, P - 1)
+        nc = np.clip(cols + dc, 0, P - 1)
+
+        corrupted[:, rows, cols] = target[:, nr, nc]   # all r² channels
+        mask[rows, cols]         = 1.0
 
         return corrupted, mask
 

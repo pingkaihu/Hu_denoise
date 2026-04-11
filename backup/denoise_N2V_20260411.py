@@ -1,16 +1,10 @@
 # ============================================================
-# SEM Image Denoising — Log + Noise2Void (pure PyTorch)
+# SEM Image Denoising — Noise2Void (pure PyTorch, no careamics)
 # ============================================================
-# Strategy: homomorphic filtering converts multiplicative speckle
-#   y = x · n  (n ~ Gamma)
-# to additive form via log1p:
-#   log(y) = log(x) + log(n)
-# This restores the N2V pixel-independence assumption for speckle.
-#
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 # Usage:
-#   python test_sem.py              # generate synthetic test image
-#   python denoise_log_torch.py     # train + denoise -> denoised_sem_log_torch.tif
+#   python test_sem.py          # generate synthetic test image
+#   python denoise_torch.py     # train + denoise -> denoised_sem.tif
 # ============================================================
 
 import os
@@ -18,7 +12,7 @@ os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
 
 import time
-from typing import List, Tuple
+from typing import Tuple
 
 import numpy as np
 import tifffile
@@ -33,7 +27,7 @@ torch.set_float32_matmul_precision('high')  # 啟用 Tensor Core，提升 RTX �
 
 
 # ============================================================
-# 1. Image Loading
+# 1. Image Loading  (identical to denoise.py)
 # ============================================================
 
 def load_sem_image(path: str) -> Tuple[np.ndarray, float, float]:
@@ -49,42 +43,6 @@ def load_sem_image(path: str) -> Tuple[np.ndarray, float, float]:
     img_min, img_max = float(img.min()), float(img.max())
     img = (img - img_min) / (img_max - img_min + 1e-8)
     return img, img_min, img_max
-
-
-# ============================================================
-# 1.5 Log-Domain Transforms
-# ============================================================
-
-def apply_log_transform(image: np.ndarray) -> Tuple[np.ndarray, float, float]:
-    """
-    Convert linear [0, 1] image to normalized log domain.
-
-    Steps:
-      1. log1p(image)  — numerically stable; image ∈ [0,1] so log1p ∈ [0, log(2)]
-      2. Re-normalize to [0, 1] and record log_min, log_max for inversion
-
-    The N2V network trains and infers entirely in this log-normalized space.
-    """
-    log_img = np.log1p(image)
-    log_min, log_max = float(log_img.min()), float(log_img.max())
-    log_img = (log_img - log_min) / (log_max - log_min + 1e-8)
-    return log_img, log_min, log_max
-
-
-def inverse_log_transform(
-    denoised_log: np.ndarray,
-    log_min: float,
-    log_max: float,
-) -> np.ndarray:
-    """
-    Reverse the log normalization, then apply expm1 to return to linear [0, 1].
-
-    Steps:
-      1. Un-normalize: restore log1p-scale values
-      2. expm1: inverse of log1p → linear domain [0, 1]
-    """
-    denoised_log_unnorm = denoised_log * (log_max - log_min) + log_min
-    return np.expm1(denoised_log_unnorm).astype(np.float32)
 
 
 # ============================================================
@@ -237,38 +195,34 @@ class N2VDataset(Dataset):
         self, patch: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Vectorized N2V blind-spot masking.
+        Replace n_masked random pixels with randomly sampled neighbor values.
 
-        All n_masked pixels are processed simultaneously via NumPy array ops.
-        (0,0) self-replacement guard: when an offset lands on (0,0), we randomly
-        nudge dr OR dc by ±1 (chosen per collision) to keep the offset
-        distribution symmetric rather than always biasing one axis.
+        Returns (corrupted_patch, binary_mask) — mask is 1.0 at masked positions.
         """
-        P   = self.patch_size
-        rad = self.neighbor_radius
-
+        P = self.patch_size
         corrupted = patch.copy()
         mask      = np.zeros((P, P), dtype=np.float32)
 
-        flat_idx   = self.rng.choice(P * P, size=self.n_masked, replace=False)
+        # Choose unique pixel positions to mask (flat index, then unravel)
+        flat_idx = self.rng.choice(P * P, size=self.n_masked, replace=False)
         rows, cols = np.unravel_index(flat_idx, (P, P))
 
-        dr = self.rng.integers(-rad, rad + 1, size=self.n_masked)
-        dc = self.rng.integers(-rad, rad + 1, size=self.n_masked)
+        rad = self.neighbor_radius
+        # Pre-compute list of valid non-zero offsets to avoid the while-loop overhead
+        dr_choices = np.arange(-rad, rad + 1)
+        dc_choices = np.arange(-rad, rad + 1)
 
-        zero_mask = (dr == 0) & (dc == 0)
-        if np.any(zero_mask):
-            n_fix    = int(np.sum(zero_mask))
-            shift_dr = self.rng.integers(0, 2, size=n_fix).astype(bool)
-            sign     = self.rng.choice([-1, 1], size=n_fix)
-            dr[zero_mask] = np.where(shift_dr,  sign, 0)
-            dc[zero_mask] = np.where(~shift_dr, sign, 0)
-
-        nr = np.clip(rows + dr, 0, P - 1)
-        nc = np.clip(cols + dc, 0, P - 1)
-
-        corrupted[rows, cols] = patch[nr, nc]
-        mask[rows, cols]      = 1.0
+        for r, c in zip(rows, cols):
+            # Sample random offset, excluding (0, 0)
+            while True:
+                dr = int(self.rng.choice(dr_choices))
+                dc = int(self.rng.choice(dc_choices))
+                if dr != 0 or dc != 0:
+                    break
+            nr = int(np.clip(r + dr, 0, P - 1))
+            nc = int(np.clip(c + dc, 0, P - 1))
+            corrupted[r, c] = patch[nr, nc]
+            mask[r, c]      = 1.0
 
         return corrupted, mask
 
@@ -366,104 +320,73 @@ def train_n2v(
 
 
 # ============================================================
-# 5. Tiled Inference — Opt 2 (Batched) + Opt 4 (Reflection Padding)
+# 5. Tiled Inference with Hann-Window Blending
 # ============================================================
-
-def _compute_padding(image_size: int, tile_size: int) -> int:
-    """Return reflection padding needed on one axis (per-axis, independent)."""
-    pad = max(0, tile_size - image_size)
-    padded = image_size + pad
-    remainder = padded % 8
-    if remainder != 0:
-        pad += 8 - remainder
-    return pad
-
 
 def predict_tiled(
     model: nn.Module,
     image: np.ndarray,
-    tile_size:        Tuple[int, int] = (256, 256),
-    tile_overlap:     Tuple[int, int] = (48, 48),
-    infer_batch_size: int             = 8,
-    device: torch.device              = None,
+    tile_size:    Tuple[int, int] = (256, 256),
+    tile_overlap: Tuple[int, int] = (48, 48),
+    device: torch.device          = None,
 ) -> np.ndarray:
     """
     Run inference on large images by processing overlapping tiles.
     Overlapping regions are blended using a 2D Hann window to avoid seams.
 
-    Opt 4 — Reflection Padding:
-        Images smaller than tile_size are padded per-axis independently,
-        fixing the if-condition bug where one axis misses divisible-by-8 alignment.
-
-    Opt 2 — Batched GPU Inference:
-        Tiles are stacked into batches of `infer_batch_size` for one forward pass,
-        maximising CUDA occupancy.
-
-    Returns denoised image as float32 (H, W) — same shape as input.
+    Returns denoised image as float32 (H, W).
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    H, W   = image.shape
-    th, tw = tile_size
-    oh, ow = tile_overlap
+    H, W      = image.shape
+    th, tw    = tile_size
+    oh, ow    = tile_overlap
+    stride_h  = th - oh
+    stride_w  = tw - ow
 
+    assert th <= H and tw <= W, \
+        f"tile_size {tile_size} must be <= image size {image.shape}"
     assert th % 8 == 0 and tw % 8 == 0, \
         f"tile_size dimensions must be divisible by 8, got {tile_size}"
-    assert oh < th and ow < tw, \
-        f"tile_overlap {tile_overlap} must be smaller than tile_size {tile_size}"
 
-    # Opt 4: Reflection padding (per-axis, independent)
-    pad_h = _compute_padding(H, th)
-    pad_w = _compute_padding(W, tw)
-
-    if pad_h > 0 or pad_w > 0:
-        padded = np.pad(image, ((0, pad_h), (0, pad_w)), mode='reflect')
-    else:
-        padded = image
-
-    pH, pW   = padded.shape
-    stride_h = th - oh
-    stride_w = tw - ow
-
+    # 2D Hann window for weighted blending
     hann_h  = torch.hann_window(th, periodic=False).numpy()
     hann_w  = torch.hann_window(tw, periodic=False).numpy()
-    hann_2d = np.outer(hann_h, hann_w)
+    hann_2d = np.outer(hann_h, hann_w)               # (th, tw)
 
-    output_sum = np.zeros((pH, pW), dtype=np.float64)
-    weight_sum = np.zeros((pH, pW), dtype=np.float64)
+    output_sum = np.zeros((H, W), dtype=np.float64)
+    weight_sum = np.zeros((H, W), dtype=np.float64)
 
-    row_starts: List[int] = list(range(0, pH - th + 1, stride_h))
-    col_starts: List[int] = list(range(0, pW - tw + 1, stride_w))
-    if row_starts[-1] + th < pH:
-        row_starts.append(pH - th)
-    if col_starts[-1] + tw < pW:
-        col_starts.append(pW - tw)
+    # Build tile origin lists, ensuring the last tile reaches the image edge
+    row_starts = list(range(0, H - th + 1, stride_h))
+    col_starts = list(range(0, W - tw + 1, stride_w))
+    if row_starts[-1] + th < H:
+        row_starts.append(H - th)
+    if col_starts[-1] + tw < W:
+        col_starts.append(W - tw)
 
-    coords      = [(r0, c0) for r0 in row_starts for c0 in col_starts]
-    total_tiles = len(coords)
+    total_tiles = len(row_starts) * len(col_starts)
     processed   = 0
 
-    # Opt 2: Batched GPU inference
     model.eval()
     with torch.no_grad():
-        for i in range(0, total_tiles, infer_batch_size):
-            batch_coords = coords[i:i + infer_batch_size]
-            tiles   = [padded[r0:r0 + th, c0:c0 + tw] for (r0, c0) in batch_coords]
-            batch_t = torch.from_numpy(np.stack(tiles)).unsqueeze(1).to(device)
-            preds   = model(batch_t).squeeze(1).cpu().numpy()
+        for r0 in row_starts:
+            for c0 in col_starts:
+                tile_np = image[r0:r0 + th, c0:c0 + tw]
+                tile_t  = torch.from_numpy(tile_np).unsqueeze(0).unsqueeze(0).to(device)
 
-            for j, (r0, c0) in enumerate(batch_coords):
-                output_sum[r0:r0 + th, c0:c0 + tw] += preds[j].astype(np.float64) * hann_2d
+                pred_np = model(tile_t).squeeze().cpu().numpy()
+
+                output_sum[r0:r0 + th, c0:c0 + tw] += pred_np.astype(np.float64) * hann_2d
                 weight_sum[r0:r0 + th, c0:c0 + tw] += hann_2d
 
-            processed = min(i + infer_batch_size, total_tiles)
-            if processed % max(infer_batch_size, total_tiles // 5 or 1) == 0 \
-                    or processed == total_tiles:
-                print(f"  Inference: {processed}/{total_tiles} tiles")
+                processed += 1
+                if processed % 10 == 0 or processed == total_tiles:
+                    print(f"  Inference: {processed}/{total_tiles} tiles")
 
-    denoised_pad = (output_sum / np.maximum(weight_sum, 1e-8)).astype(np.float32)
-    return denoised_pad[:H, :W]
+    denoised = (output_sum / np.maximum(weight_sum, 1e-8)).astype(np.float32)
+    return denoised
 
 
 # ============================================================
@@ -475,8 +398,8 @@ def save_outputs(
     denoised: np.ndarray,
     img_min:  float,
     img_max:  float,
-    tif_path: str = "data/denoised_sem_log_torch.tif",
-    png_path: str = "data/denoising_log_result.png",
+    tif_path: str = "data/denoised_sem_torch.tif",
+    png_path: str = "data/denoising_result.png",
 ) -> None:
     """Save denoised TIF (original value range) and side-by-side comparison PNG."""
     # Restore original grayscale range before saving
@@ -484,7 +407,7 @@ def save_outputs(
     tifffile.imwrite(tif_path, denoised_original)
     print(f"Saved: {tif_path},  range: [{denoised_original.min():.3f}, {denoised_original.max():.3f}]")
 
-    # Visualization uses linear [0, 1] values (both image and denoised are in this space)
+    # Visualization uses normalized [0, 1] values
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
     axes[0].imshow(image,    cmap='gray')
@@ -492,7 +415,7 @@ def save_outputs(
     axes[0].axis('off')
 
     axes[1].imshow(denoised, cmap='gray')
-    axes[1].set_title('Log + N2V Denoised')
+    axes[1].set_title('N2V Denoised')
     axes[1].axis('off')
 
     diff = np.abs(image - denoised) * 3
@@ -517,49 +440,41 @@ def main(
     tile_size:    Tuple[int, int] = (256, 256),
     tile_overlap: Tuple[int, int] = (48, 48),
 ) -> None:
-
+    
     # -- Here can edit input/output
-    input_path  = "data/test_sem.tif"
-    output_path = "data/denoised_sem_log_torch.tif"
+    input_path = "data/test_sem.tif"
+    output_path = "data/denoised_sem_N2V.tif"
 
-    """Full Log + N2V pipeline: load -> log transform -> train -> predict -> expm1 -> save."""
+    """Full N2V pipeline: load -> train -> predict -> save."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # 1. Load image (normalized to [0, 1], original range preserved)
+    # 1. Load image
     image, img_min, img_max = load_sem_image(input_path)
-    print(f"Image shape: {image.shape},  original range: [{img_min:.3f}, {img_max:.3f}]")
-
-    # 1.5 Log transform: multiplicative speckle → additive noise in log domain
-    log_image, log_min, log_max = apply_log_transform(image)
-    print(f"Log-domain range (before norm): [{log_min:.4f}, {log_max:.4f}]")
+    print(f"Image shape: {image.shape},  range: [{img_min:.3f}, {img_max:.3f}]")
 
     # 2. Build model
     model = N2VUNet(in_channels=1, base_features=32)
 
-    # 3. Train on log-domain image
+    # 3. Train
     model = train_n2v(
-        model, log_image,
+        model, image,
         patch_size=patch_size,
         batch_size=batch_size,
         num_epochs=num_epochs,
         device=device,
     )
 
-    # 4. Tiled inference in log domain
-    print("\nRunning tiled inference (log domain)...")
-    denoised_log = predict_tiled(
-        model, log_image,
+    # 4. Tiled inference
+    print("\nRunning tiled inference...")
+    denoised = predict_tiled(
+        model, image,
         tile_size=tile_size,
         tile_overlap=tile_overlap,
         device=device,
     )
 
-    # 4.5 Inverse log transform → linear domain [0, 1]
-    denoised_linear = inverse_log_transform(denoised_log, log_min, log_max)
-    print(f"Linear-domain denoised range: [{denoised_linear.min():.3f}, {denoised_linear.max():.3f}]")
-
-    # 5. Save outputs (restores original pixel value range in .tif)
-    save_outputs(image, denoised_linear, img_min, img_max, tif_path=output_path)
+    # 5. Save outputs
+    save_outputs(image, denoised, img_min, img_max, tif_path=output_path)
 
 
 if __name__ == '__main__':
