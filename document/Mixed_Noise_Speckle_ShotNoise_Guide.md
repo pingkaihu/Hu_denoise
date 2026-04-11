@@ -265,9 +265,78 @@ p(x | y)  ∝  p(y | x)  ·  p(x)
 
 ## 5. 推薦聯合處理策略
 
-### 策略一：GAT + PN2V（理論最嚴謹）
+> **推薦優先順序（修訂）**
+>
+> | 優先 | 方法 | 理由 |
+> |---|---|---|
+> | **1** | **PN2V 原始空間（不做 GAT）** | GMM 直接對 Poisson-Gamma 混合建模；無轉換冗餘；無低計數偏差問題 |
+> | **2** | **GR2R** | 理論上對 Gamma 噪聲最直接；不需要轉換；需估計 ENL 參數 |
+> | **3** | **Self2Self** | 零參數，無需估計；但 grain > 2px 時效果降低 |
+> | **4** | **GAT + N2V**（降級快速方案）| 訓練快；低計數場景（背景均值 < 0.02）需跳過 |
+> | 5（退場） | ~~GAT + PN2V~~ | 數學目標自相矛盾（詳見下方說明）；不再作為首選 |
+>
+> **核心邏輯轉變：** PN2V 的 GMM 本來就能擬合非高斯分佈，對 Poisson-Gamma 的直接建模比先用 GAT 扭曲噪聲結構後再建模更誠實。「聯合建模」的正確做法是選一個能在原始空間工作的方法，而非前置轉換後疊加另一個方法。
 
-**原理：** 廣義 Anscombe 轉換（GAT）消除 Poisson-Gaussian 混合噪聲的訊號相依性，PN2V 的機率噪聲建模處理殘餘非高斯成分，擴大 blind-spot 覆蓋 speckle 的空間相關長度。
+---
+
+### 策略一：PN2V 原始空間（首選）
+
+**原理：** PN2V 的高斯混合模型（GMM）直接在原始像素強度空間學習 Poisson-Gamma 混合的噪聲分佈，不需要任何前處理轉換。Blind-spot 架構確保訓練訊號不直接洩漏給自己。
+
+```python
+import numpy as np
+import tifffile
+from careamics import CAREamist
+from careamics.config import create_n2v_configuration
+from careamics.models.noise_models import GaussianMixtureNoiseModel
+
+# 載入影像（保留原始計數空間，僅做最小歸一化）
+image = tifffile.imread("sem_mixed.tif").astype(np.float32)
+if image.ndim == 3:
+    image = image @ np.array([0.2989, 0.5870, 0.1140])
+image_norm = (image - image.min()) / (image.max() - image.min() + 1e-8)
+
+# 直接在原始空間建立噪聲模型（不做 GAT）
+train_data = image_norm[np.newaxis, ...]
+noise_model = GaussianMixtureNoiseModel.create_from_images(
+    images=train_data,
+    num_gaussians=3,      # 3 個高斯可覆蓋 Poisson-Gamma 的主要形態
+)
+
+config = create_n2v_configuration(
+    experiment_name="sem_mixed_pn2v_raw",
+    data_type="array",
+    axes="YX",
+    patch_size=[64, 64],
+    batch_size=64,
+    num_epochs=150,
+)
+careamist = CAREamist(source=config, noise_model=noise_model)
+careamist.train(train_source=train_data, val_percentage=0.1)
+
+denoised = np.squeeze(careamist.predict(
+    source=train_data, data_type="array", axes="YX",
+    tile_size=[256, 256], tile_overlap=[48, 48],
+))
+denoised = denoised * (image.max() - image.min()) + image.min()
+tifffile.imwrite("denoised_pn2v_raw.tif", denoised.astype(np.float32))
+```
+
+**何時改用其他策略：**
+- Speckle grain > 2px（高倍率）→ 改用 GR2R 或 Self2Self
+- 需要批次遷移到 > 10 張不同條件影像 → 先做直方圖匹配再套用
+
+---
+
+### 策略二：GAT + PN2V（特定場景備選）
+
+**適用場景：** Shot noise 強度遠大於 speckle（純 Poisson-Gaussian 混合，speckle 成分極弱），且 gain / σ_read 可準確估計。此時 GAT 的方差穩定化效果明顯，PN2V 可專注於 GAT 未能消除的殘餘非均勻性。
+
+> **⚠️ 數學自洽性限制**
+>
+> GAT 的設計目標是把混合噪聲完全轉為方差 ≈ 1 的 AWGN。若成功，普通 N2V + L2 即為最優解，PN2V 的 GMM 無額外收益。若失敗（低訊號區），PN2V 實際上在對 **GAT 的轉換誤差**建模，而非原始物理噪聲。此組合的理論假設在正常訊號強度範圍外都會弱化。
+>
+> **極低計數（背景均值 < 0.02）：** 必須完全跳過 GAT，改用策略一。
 
 ```python
 import numpy as np
@@ -336,7 +405,7 @@ denoised = denoised * (image.max() - image.min()) + image.min()
 tifffile.imwrite("denoised_gat_pn2v.tif", denoised.astype(np.float32))
 ```
 
-### 策略二：Self2Self（零參數，最省事）
+### 策略三：Self2Self（零參數，最省事）
 
 適合完全不想估計任何噪聲參數的情況：
 
@@ -355,7 +424,7 @@ python demo_denoising.py --input sem_mixed.tif --output denoised_s2s.tif
 - 每張影像都重新訓練（30–90 分鐘）
 - 無法批量處理
 
-### 策略三：GAT + BM3D（快速傳統基準）
+### 策略四：GAT + BM3D（快速傳統基準）
 
 在進入深度學習方案前，用 1 分鐘評估去噪潛力：
 
@@ -377,18 +446,35 @@ def gat_bm3d(image, gain=1.0, sigma_read=0.0):
 ### 策略選擇依據
 
 ```
-能否估計 gain 和 σ_read？
-  ├─ 是 → GAT + PN2V（效果最好，理論最嚴謹）
-  └─ 否 → Self2Self（零參數，無需任何估計）
+Step 0：診斷計數等級
+  └─ 背景區域歸一化均值 < 0.02（極低計數）？
+       ├─ 是 → 直接用 PN2V 原始空間（策略一），跳過所有轉換
+       └─ 否 → 繼續往下
 
-Speckle 成分很強（高倍率、低電壓）？
-  └─ 兩個策略都加上擴大 blind-spot（3×3 或 5×5）
+Step 1：估計 speckle grain size
+  └─ grain_px = estimate_speckle_grain_size(image)
+       ├─ grain_px ≤ 2 → N2V 系列或 PN2V 都可用
+       └─ grain_px > 2 → 需要 GR2R 或 Self2Self
 
-Shot noise 成分很強（極低劑量）？
-  └─ 優先 GAT + PN2V（Poisson 建模更精準）
-
-需要快速預覽？
-  └─ GAT + BM3D（< 1 分鐘，無需訓練）
+Step 2：依資源與參數估計能力選擇
+  │
+  ├─ 優先首選：PN2V 原始空間（策略一）
+  │    └─► 適用大多數場景，無需估計任何參數，直接建模混合噪聲
+  │
+  ├─ grain > 2px 且能估計 ENL？
+  │    └─► GR2R（理論最直接，Gamma 分佈原生支援）
+  │
+  ├─ 不想估計任何參數 + grain > 2px？
+  │    └─► Self2Self（零假設，但訓練時間 30–90 分鐘，無法批量）
+  │
+  ├─ Shot noise 遠大於 Speckle（Var/Mean ≈ 1，grain 小）？
+  │    └─► GAT + N2V（快速，前提：背景均值 > 0.02）
+  │
+  ├─ Shot noise 遠大於 Speckle + 需要精細噪聲建模？
+  │    └─► GAT + PN2V（備選策略二）
+  │
+  └─ 需要快速基準（< 1 分鐘）？
+       └─► GAT + BM3D（策略四）
 ```
 
 ### 為何不用 DIP 作為首選
@@ -483,7 +569,7 @@ def diagnose_noise_type(image, flat_region=None):
     elif cv > 0.3:
         print("→ 主要為 Speckle（乘性）")
     else:
-        print("→ 混合型噪聲，建議用 GAT + PN2V 或 Self2Self")
+        print("→ 混合型噪聲，建議用 PN2V 原始空間（首選）或 Self2Self（無參數備選）")
 
 image = tifffile.imread("sem_mixed.tif").astype(np.float32)
 stats = diagnose_noise_type(image)
@@ -620,28 +706,38 @@ def evaluate_mixed_denoising(original, denoised, flat_region=None):
 ## 8. 方法選擇決策樹
 
 ```
-Step 1：診斷噪聲類型（diagnose_noise_type）
+Step 1：先診斷計數等級
+  └─ background_mean < 0.02（極低計數）？
+       ├─ 是 → PN2V 原始空間（策略一），所有轉換方法禁用
+       └─ 否 → 繼續
+
+Step 2：診斷噪聲類型（diagnose_noise_type）
   │
   ├─ Var/Mean ≈ 1，均勻顆粒 → 主要是 Shot Noise
-  │    └─► Anscombe + N2V 或 PN2V（不需要 speckle 特殊處理）
+  │    ├─► PN2V 原始空間（首選，直接建模 Poisson）
+  │    └─► 或 GAT + N2V（快速備選）
   │
   ├─ CV > 0.3，有 grain pattern → 主要是 Speckle
   │    └─► 參考《Speckle_Denoising_Strategy.md》
   │
-  └─ 兩者特徵都有 → 混合型（本文件的目標場景）
+  └─ 兩者特徵都有 → 混合型（本文件目標場景）
        │
-       ├─ 能估計 gain 和 σ_read？
-       │    ├─ 是 → GAT + PN2V（理論最嚴謹）
-       │    └─ 否 → Self2Self（零參數）
+       ├─ 首選：PN2V 原始空間（策略一）
+       │    └─► 適用大多數場景，無需任何參數估計
        │
-       ├─ 需要批量處理（> 5 張）？
-       │    └─► 強烈建議 GAT + PN2V（Self2Self 規模成本太高）
+       ├─ grain > 2px（高倍率 SEM）？
+       │    ├─ 能估計 ENL → GR2R
+       │    └─ 不想估計  → Self2Self（30–90 分鐘/張）
        │
-       ├─ 只需快速基準？
-       │    └─► GAT + BM3D（< 1 分鐘）
+       ├─ 需要批量處理（> 5 張）且條件穩定？
+       │    ├─► PN2V 原始空間訓練一次批量推論
+       │    └─► ⚠️ 先做 check_batch_stability，偏移 > 10% 需直方圖匹配
        │
-       └─ 噪聲分佈完全未知，且只有 1 張？
-            └─► Self2Self 或 DIP（修改損失版）
+       ├─ Shot noise 明顯強於 Speckle + 需精細建模？
+       │    └─► GAT + PN2V（策略二備選，非首選）
+       │
+       └─ 只需快速基準（< 1 分鐘）？
+            └─► GAT + BM3D（策略四）
 ```
 
 ---
@@ -650,14 +746,17 @@ Step 1：診斷噪聲類型（diagnose_noise_type）
 
 ### 理論適用性
 
-| 方法 | 處理混合噪聲 | 理論嚴謹性 | 早停問題 | 空間相關噪聲 |
-|---|---|---|---|---|
-| **GAT + PN2V** | ✅ 聯合建模 | ✅ 最嚴謹 | 不需要 | 擴大 blind-spot |
-| **Self2Self** | ✅ 無假設 | ✅ 通用 | 不需要 | 隱式處理 |
-| DIP（修改損失）| ✅ 修改後 | ⚠️ 中等 | **核心問題** | 架構先驗 |
-| DIP（標準）| ⚠️ MSE 偏移 | ⚠️ 較差 | **核心問題** | 架構先驗 |
-| 2-step 序列 | ❌ 統計破壞 | ❌ | 不適用 | — |
-| GAT + BM3D | ✅ 近似 | ⚠️ 傳統方法 | 不需要 | 不處理 |
+| 方法 | 優先順序 | 處理混合噪聲 | 理論嚴謹性 | 早停問題 | 空間相關噪聲 |
+|---|---|---|---|---|---|
+| **PN2V 原始空間** | ⭐ **首選** | ✅ 直接建模 Poisson-Gamma | ✅ 最直接 | 不需要 | blind-spot 原始大小 |
+| **GR2R** | ⭐⭐ | ✅ Gamma 原生支援 | ✅ 最嚴謹（Gamma）| 不需要 | 不依賴 blind-spot |
+| **Self2Self** | ⭐⭐⭐ | ✅ 無假設 | ✅ 通用 | 不需要 | 隱式（grain ≤ 2px）|
+| GAT + N2V | ⭐⭐⭐⭐（快速）| ✅ 近似 | ⚠️ 低計數失效 | 不需要 | blind-spot 原始大小 |
+| GAT + PN2V | ⭐⭐⭐⭐⭐（特定場景）| ⚠️ 數學自相矛盾（⚠️ 見注1）| ⚠️ 有條件 | 不需要 | 擴大 blind-spot（⚠️ 見注2）|
+| DIP（修改損失）| — | ✅ 修改後 | ⚠️ 中等 | **核心問題** | 架構先驗 |
+| DIP（標準）| — | ⚠️ MSE 偏移 | ⚠️ 較差 | **核心問題** | 架構先驗 |
+| 2-step 序列 | ❌ | ❌ 統計破壞 | ❌ | 不適用 | — |
+| GAT + BM3D | 基準 | ✅ 近似 | ⚠️ 傳統方法 | 不需要 | 不處理 |
 
 ### 運算資源
 
@@ -665,17 +764,26 @@ Step 1：診斷噪聲類型（diagnose_noise_type）
 |---|---|---|---|---|
 | GAT + BM3D | 不需要 | 10–60 秒 | — | 不需要 |
 | N2V | 5–15 分鐘 | 1–3 秒 | ✅ 高 | 2–4 GB |
-| **GAT + PN2V** | 15–40 分鐘 | 5–15 秒 | ✅ 高 | 3–6 GB |
+| **PN2V 原始空間** | 15–40 分鐘 | 5–15 秒 | ✅ 高（⚠️ 見注3）| 3–6 GB |
+| GAT + PN2V | 15–40 分鐘 | 5–15 秒 | ✅ 高（⚠️ 見注3）| 3–6 GB |
 | DIP | 5–20 分鐘 | 1–3 秒 | ❌ 低 | 2–4 GB |
 | **Self2Self** | 30–90 分鐘 | 20–60 秒 | ❌ 低 | 4–6 GB |
 
 ### 綜合推薦
 
-> 面對 SEM 的 speckle + shot noise 混合情境，**GAT + PN2V** 是理論最嚴謹的聯合處理方案：GAT 消除 shot noise 的訊號相依性，PN2V 的機率噪聲建模處理殘餘非高斯分佈，擴大的 blind-spot 覆蓋 speckle 的空間相關長度。
+> 面對 SEM 的 speckle + shot noise 混合情境，**PN2V 原始空間（不做 GAT）** 是首選：GMM 直接對 Poisson-Gamma 混合的噪聲分佈建模，無前處理轉換的數學冗餘問題，在正常與極低計數場景下都比 GAT 組合更穩健。
 >
-> 若不想估計任何噪聲參數，**Self2Self** 是最實用的零假設備選方案。
+> 若 speckle grain > 2px（高倍率 SEM），改用 **GR2R**（能估計 ENL）或 **Self2Self**（零參數）。
+>
+> GAT + PN2V 退為「Shot noise 遠大於 Speckle + 訊號強度正常」的特定場景備選，不再作為通用首選。
 >
 > 無論選哪條路，**都不要把兩種噪聲分開序列處理**——混疊的統計結構要求聯合建模。
+
+**注1 — GAT + PN2V 的數學自洽性問題**：GAT 設計目標是把噪聲轉為 AWGN，若成功則 PN2V 的 GMM 無額外收益；若失敗（低訊號區），PN2V 在對 GAT 的轉換誤差建模，而非原始物理噪聲。兩種情況下 PN2V 都未能發揮設計用途。極低計數場景（背景均值 < 0.02）必須跳過 GAT 改用策略一。
+
+**注2 — 擴大 blind-spot 的解析度代價**：擴大至 3×3 或 5×5 可覆蓋 speckle grain，但代價是抹平同等尺度的真實高頻結構。最小關鍵特徵 < 4px 時，改用 AP-BSN 或 N2V2，而非擴大盲區。
+
+**注3 — 批次遷移風險**：「可重用性高」的前提是後續影像的噪聲統計與訓練影像一致。SEM 帶電效應、束流漂移可能使背景亮度偏移 > 10%，此時需先做直方圖匹配，或分批重新訓練。
 
 ---
 

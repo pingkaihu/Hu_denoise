@@ -26,7 +26,8 @@
       "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\User\\\\.claude\\\\notify.ps1\" -Title \"Claude Code\" -Message \"測試通知 - 正常運作\")",
       "Bash(grep -l \"Deep Image Prior\\\\|DIP\" \"/h/Hu_denoise/document\"/*)",
       "Bash(xargs grep:*)",
-      "Bash(ls -la \"/h/Hu_denoise\"/*.py)"
+      "Bash(ls -la \"/h/Hu_denoise\"/*.py)",
+      "Bash(ls h:\\\\\\\\Hu_denoise\\\\\\\\*.py)"
     ]
   }
 }

@@ -311,6 +311,124 @@ Epoch [ 10/100]  train=0.000312  val=0.000334  1.6s
 
 ---
 
+## GR2R 參數設定（`denoise_GR2R.py`）
+
+GR2R（CVPR 2021）不使用盲點遮蔽，改為對同一 patch 獨立做兩次「再污染」產生訓練對：
+
+```
+y1 = patch + α·σ·ε₁   (輸入)
+y2 = patch + α·σ·ε₂   (目標，獨立採樣)
+Loss = MSE(f(y1), y2)  — 覆蓋所有像素
+```
+
+> `patch_size`、`batch_size`、`epochs`、`tile_size`、`tile_overlap` 的調整原則與 N2V 完全相同，
+> 請直接參照前面的〈快速對照表〉與〈N2V 各尺寸參數設定〉。
+
+### GR2R 專屬核心參數
+
+| 參數 | 預設值 | 說明 | 調整方向 |
+|---|---|---|---|
+| `--alpha` | `1.0` | 再污染強度倍率：`σ_r = alpha × σ_estimated`。控制訓練信號強度與偏差的平衡。 | 見下方 alpha 選擇指南 |
+| `--noise_std` | `0`（自動） | 手動指定噪聲 σ（0 = 用 Laplacian MAD 自動估計） | 有外部測量值時才手動指定 |
+| `--poisson` | `False` | 改用 Poisson 再污染模式（適合散粒噪聲主導的 SEM） | 見下方噪聲模式選擇 |
+| `--photon_scale` | `100` | Poisson 模式下的光子計數尺度（僅在 `--poisson` 時有效） | 見下方 photon_scale 估計 |
+
+---
+
+### `--alpha` 選擇指南
+
+alpha 決定再污染噪聲的強度，是 GR2R 最關鍵的調整參數：
+
+| alpha 值 | 效果 | 適用情境 |
+|---|---|---|
+| `0.5` | 輕度再污染；訓練信號較弱但偏差小 | 噪聲已很低；影像細節豐富需保留 |
+| `1.0`（預設） | 再污染 σ 與原始噪聲相當；平衡點 | 大多數 SEM 影像的起點 |
+| `1.5` | 較強再污染；訓練信號更穩定 | 高噪聲影像；loss 收斂不穩定時 |
+| `2.0` | 強再污染；可能引入輕微模糊偏差 | 極高噪聲；噪聲估計不準確時的保守選擇 |
+
+> **建議先以 `alpha=1.0` 執行，若輸出仍殘留可見噪聲再試 `1.5`；若輸出偏模糊則降至 `0.5`。**
+
+---
+
+### 噪聲模式選擇：Gaussian vs Poisson
+
+| 情況 | 建議模式 | 原因 |
+|---|---|---|
+| 標準 SEM（混合噪聲） | Gaussian（預設） | MAD 估計的 σ 能涵蓋大部分加性噪聲 |
+| 低電子劑量 SEM（高散粒噪聲） | `--poisson` | 散粒噪聲的方差與信號成正比，Poisson 再污染更符合物理 |
+| 不確定時 | Gaussian | 先跑預設；若亮區殘留「顆粒感」強於暗區，再試 `--poisson` |
+
+---
+
+### `--photon_scale` 估計方法
+
+`photon_scale` 是 Poisson 模式的尺度參數，對應影像像素值 `[0,1]` 對應的最大光子數：
+
+```python
+# 粗估方式：觀察影像最亮區域的局部標準差
+# 對 Poisson 噪聲：Var(y) ≈ mean(y) / photon_scale
+# 因此：photon_scale ≈ mean(bright_patch) / var(bright_patch)
+
+import numpy as np, tifffile
+img = tifffile.imread('your_sem.tif').astype(float)
+img = (img - img.min()) / (img.max() - img.min())          # 正規化
+bright = img[img > 0.7]                                    # 取亮區
+photon_scale = bright.mean() / (bright.var() + 1e-10)
+print(f"建議 photon_scale ≈ {photon_scale:.0f}")
+```
+
+| 估計值 | 物理意義 | 對應 SEM 條件 |
+|---|---|---|
+| 50–100 | 低光子計數 | 低劑量、高速掃描 |
+| 100–300（預設 100） | 中等計數 | 一般 SEM 條件 |
+| 300–1000 | 高光子計數 | 長時間積分、高劑量 |
+
+> `photon_scale` 只影響再污染的方差大小（類似 Gaussian 模式的 alpha × σ），估計誤差在 2× 以內對結果影響有限。
+
+---
+
+### GR2R 場景快速對照
+
+| 使用場景 | `alpha` | `noise_std` | `--poisson` | `photon_scale` |
+|---|---|---|---|---|
+| 標準 SEM，未知噪聲 | `1.0` | `0`（自動） | 否 | — |
+| 細節豐富，輕噪聲 | `0.5` | `0`（自動） | 否 | — |
+| 高噪聲，收斂不穩 | `1.5` | `0`（自動） | 否 | — |
+| 低劑量散粒噪聲主導 | `1.0` | — | 是 | `100`（或估計值） |
+| 已知儀器噪聲 σ | `1.0` | 實測值 | 否 | — |
+
+```bash
+# 標準執行（自動估計噪聲）
+python denoise_GR2R.py --input data/test_sem.tif
+
+# 輕噪聲影像，保留細節
+python denoise_GR2R.py --alpha 0.5
+
+# 高散粒噪聲
+python denoise_GR2R.py --poisson --photon_scale 80
+
+# 已知 σ，強化訓練
+python denoise_GR2R.py --noise_std 0.04 --alpha 1.5
+```
+
+### GR2R 訓練輸出格式
+
+```
+Device: cuda  |  Model parameters: 1,844,036
+Re-corruption mode: Gaussian(σ_r=0.04823)
+patch_size=64  batch_size=128  epochs=100
+Patches/epoch: train=1800  val=200
+
+Epoch [  1/100]  train=0.003241  val=0.003389  time=1.9s
+Epoch [ 10/100]  train=0.002156  val=0.002201  time=1.7s
+```
+
+> GR2R 的 loss 數值**高於** N2V，因為 target `y2` 本身含噪聲（MSE 下限 = 再污染噪聲方差 `σ_r²`），而非乾淨影像。這是正常現象，**只看趨勢是否收斂**，不需與 N2V loss 比較絕對值。
+> 
+> 若 loss 始終停在 `σ_r²`（即 `alpha²·σ²`）附近不繼續下降，說明網路已無法從再污染中提取更多信號，可嘗試降低 `alpha` 或增加 `epochs`。
+
+---
+
 ## 常見問題與調整
 
 ### GPU 顯示 OOM（VRAM 不足）

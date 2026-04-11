@@ -18,11 +18,14 @@ pip install torch tifffile matplotlib numpy
 | Script | When to use | Output |
 |---|---|---|
 | `denoise_N2V.py` | Standard single-image N2V, baseline PyTorch | `data/denoised_sem_N2V.tif` |
-| `denoise_N2V_test.py` | **Recommended** — optimized version (vectorized masking, batched inference, physical train/val split, edge padding) | `data/denoised_sem_test.tif` |
+| `denoise_N2V_test.py` | **Recommended for uniform noise** — optimized version (vectorized masking, batched inference, physical train/val split, edge padding) | `data/denoised_sem_test.tif` |
+| `denoise_PN2V.py` | **Recommended for mixed noise** — PN2V pure PyTorch; GMM models raw Poisson-Gamma directly; no GAT pre-processing; includes low-count diagnostic | `data/denoised_sem_PN2V.tif` |
 | `denoise_log_N2V.py` | Speckle / multiplicative noise — applies log transform before training | `data/denoised_sem_log_torch.tif` |
-| `denoise_N2V_multi.py` | Multiple images under similar conditions — one shared model | `--output_dir` flag |
+| `denoise_N2V_multi.py` | Multiple images under similar conditions — one shared N2V model (MSE loss) | `--output_dir` flag |
+| `denoise_PN2V_multi.py` | **Multiple images, mixed noise** — shared UNet + shared GMM; pools pixel pairs from all images for richer noise statistics; same CLI as N2V_multi | `--output_dir` flag |
 | `denoise_apbsn.py` | AP-BSN (CVPR 2022) — real-world noise, asymmetric PD + blind-spot | configurable |
 | `denoise_DIP.py` | Deep Image Prior (CVPR 2018) — no dataset, single-image generator, no noise model assumption, EMA early stopping; ~3-5 min on GPU | `data/denoised_sem_DIP.tif` |
+| `denoise_GR2R.py` | **GR2R (CVPR 2021)** — no blind-spot masking; trains on double-recorrupted patch pairs; full-context receptive field; supports Gaussian & Poisson re-corruption (`--poisson`); auto-estimates noise std | `data/denoised_sem_GR2R.tif` |
 | `denoise_N2V_careamics.py` | CAREamics-based pipeline (legacy) | `denoised_sem.tif` |
 
 ## Running the Denoiser
