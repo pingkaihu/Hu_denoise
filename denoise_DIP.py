@@ -38,6 +38,7 @@
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 # ============================================================
 
+import argparse
 import os
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
@@ -473,35 +474,42 @@ def save_outputs(
 # 6. Main Pipeline
 # ============================================================
 
-def main(
-    input_path:     str   = INPUT_PATH,
-    output_path:    str   = OUTPUT_PATH,
-    png_path:       str   = PNG_PATH,
-    num_channels:   int   = NUM_CHANNELS,
-    num_levels:     int   = NUM_LEVELS,
-    num_iterations: int   = NUM_ITERATIONS,
-    learning_rate:  float = LEARNING_RATE,
-    reg_noise_std:  float = REG_NOISE_STD,
-    min_iterations: int   = MIN_ITERATIONS,
-    patience:       int   = PATIENCE,
-) -> None:
-    """
-    Full DIP denoising pipeline: load → train → save.
-    完整的 DIP 去噪流程：載入 → 訓練 → 儲存。
+def main() -> None:
+    """Full DIP denoising pipeline: load → train → save."""
+    parser = argparse.ArgumentParser(
+        description="DIP SEM denoiser: Deep Image Prior, no dataset required."
+    )
+    parser.add_argument('--input',          type=str,   default=INPUT_PATH,
+                        help='Path to input .tif/.tiff/.png image')
+    parser.add_argument('--output',         type=str,   default='',
+                        help=f'Path to output .tif (default: {OUTPUT_PATH})')
+    parser.add_argument('--num_channels',   type=int,   default=NUM_CHANNELS,
+                        help='Encoder/decoder width; reduce to 64 if VRAM is tight or image >2048px')
+    parser.add_argument('--num_levels',     type=int,   default=NUM_LEVELS,
+                        help='Encoder depth (stride-2 steps); auto-reduced for small images')
+    parser.add_argument('--num_iterations', type=int,   default=NUM_ITERATIONS,
+                        help='Max iterations (early stopping may halt sooner); 1000 for fast preview')
+    parser.add_argument('--lr',             type=float, default=LEARNING_RATE,
+                        help='Adam learning rate')
+    parser.add_argument('--reg_noise_std',  type=float, default=REG_NOISE_STD,
+                        help='z-perturbation std: 0.03 standard, 0.05 heavy noise, 0.01 smooth')
+    parser.add_argument('--min_iterations', type=int,   default=MIN_ITERATIONS,
+                        help='Never stop before this many iterations')
+    parser.add_argument('--patience',       type=int,   default=PATIENCE,
+                        help='Consecutive iters with loss > EMA before early stop')
+    args = parser.parse_args()
 
-    Parameter guide (參數調整指南):
-      num_channels  : 128 for most images; reduce to 64 if VRAM is tight or
-                      image is very large (>2048 px). Auto-reduced if max(H,W)>MAX_SIDE.
-                      大多數情況下使用 128；若 VRAM 不足或影像很大則減為 64。
-      num_levels    : 5 for normal images (≥64 px). Auto-reduced for tiny images.
-                      一般影像使用 5；過小的影像會自動縮減。
-      num_iterations: 3000 is a safe upper bound with early stopping. For fast
-                      preview, try 1000 with min_iterations=200.
-                      3000 搭配早停是安全上限；快速預覽可嘗試 1000（min_iterations=200）。
-      reg_noise_std : 0.03 is standard. Increase to 0.05 for heavy noise,
-                      decrease to 0.01 for smooth/low-noise images.
-                      標準值 0.03；重噪聲影像可增至 0.05，平滑影像可減至 0.01。
-    """
+    input_path     = args.input
+    output_path    = args.output or OUTPUT_PATH
+    png_path       = PNG_PATH
+    num_channels   = args.num_channels
+    num_levels     = args.num_levels
+    num_iterations = args.num_iterations
+    learning_rate  = args.lr
+    reg_noise_std  = args.reg_noise_std
+    min_iterations = args.min_iterations
+    patience       = args.patience
+
     t_start = time.time()
     device  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 

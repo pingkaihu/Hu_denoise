@@ -13,6 +13,7 @@
 #   python denoise_log_torch.py     # train + denoise -> denoised_sem_log_torch.tif
 # ============================================================
 
+import argparse
 import os
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
@@ -510,19 +511,31 @@ def save_outputs(
 # 7. Main Pipeline
 # ============================================================
 
-def main(
-    patch_size:   int             = 64,
-    batch_size:   int             = 128,
-    num_epochs:   int             = 100,
-    tile_size:    Tuple[int, int] = (256, 256),
-    tile_overlap: Tuple[int, int] = (48, 48),
-) -> None:
-
-    # -- Here can edit input/output
-    input_path  = "data/test_sem.tif"
-    output_path = "data/denoised_sem_log_torch.tif"
-
+def main() -> None:
     """Full Log + N2V pipeline: load -> log transform -> train -> predict -> expm1 -> save."""
+    parser = argparse.ArgumentParser(
+        description="Log-N2V SEM denoiser: log-domain N2V for speckle/multiplicative noise."
+    )
+    parser.add_argument('--input',        type=str, default='data/test_sem.tif',
+                        help='Path to input .tif/.tiff/.png image')
+    parser.add_argument('--output',       type=str, default='',
+                        help='Path to output .tif (default: data/denoised_sem_log_torch.tif)')
+    parser.add_argument('--epochs',       type=int, default=100)
+    parser.add_argument('--patch_size',   type=int, default=64)
+    parser.add_argument('--batch_size',   type=int, default=128)
+    parser.add_argument('--tile_size',    type=int, default=256,
+                        help='Inference tile size applied to both H and W')
+    parser.add_argument('--tile_overlap', type=int, default=48)
+    args = parser.parse_args()
+
+    input_path   = args.input
+    output_path  = args.output or "data/denoised_sem_log_torch.tif"
+    patch_size   = args.patch_size
+    batch_size   = args.batch_size
+    num_epochs   = args.epochs
+    tile_size    = (args.tile_size, args.tile_size)
+    tile_overlap = (args.tile_overlap, args.tile_overlap)
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # 1. Load image (normalized to [0, 1], original range preserved)

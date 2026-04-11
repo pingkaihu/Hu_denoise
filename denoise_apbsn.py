@@ -32,6 +32,7 @@
 # Requirements: torch>=2.0  tifffile  matplotlib  numpy
 # ============================================================
 
+import argparse
 import os
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
@@ -593,15 +594,7 @@ def save_outputs(
 # 8. Main Pipeline
 # ============================================================
 
-def main(
-    input_path:  str  = "data/test_sem.tif",
-    output_path: str  = "data/denoised_sem_apbsn.tif",
-    pd_stride:   int  = 2,      # 2 = SEM pixel-indep. noise; 5 = camera sRGB
-    patch_size:  int  = 64,     # spatial size in PD domain (= r * patch_size orig. px)
-    batch_size:  int  = 64,
-    num_epochs:  int  = 100,
-    avg_shifts:  bool = True,   # True = AP quality mode (r² passes); False = fast
-) -> None:
+def main() -> None:
     """
     Full AP-BSN pipeline: load → train (PD+BSN) → AP-infer → save.
 
@@ -619,6 +612,31 @@ def main(
     r=5 each crop is ≤ 409×409 with 25 channels (~1.7 MB).  Both fit
     comfortably in an 8 GB GPU.
     """
+    parser = argparse.ArgumentParser(
+        description="AP-BSN SEM denoiser: asymmetric pixel-shuffle + blind-spot network."
+    )
+    parser.add_argument('--input',      type=str, default='data/test_sem.tif',
+                        help='Path to input .tif/.tiff/.png image')
+    parser.add_argument('--output',     type=str, default='',
+                        help='Path to output .tif (default: data/denoised_sem_apbsn.tif)')
+    parser.add_argument('--epochs',     type=int, default=100)
+    parser.add_argument('--patch_size', type=int, default=64,
+                        help='Spatial size in PD domain (= pd_stride * orig_px)')
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--pd_stride',  type=int, default=2,
+                        help='Pixel-shuffle stride: 2=SEM, 5=camera sRGB')
+    parser.add_argument('--no_avg_shifts', action='store_true',
+                        help='Disable AP quality mode (use single-pass inference)')
+    args = parser.parse_args()
+
+    input_path  = args.input
+    output_path = args.output or "data/denoised_sem_apbsn.tif"
+    patch_size  = args.patch_size
+    batch_size  = args.batch_size
+    num_epochs  = args.epochs
+    pd_stride   = args.pd_stride
+    avg_shifts  = not args.no_avg_shifts
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # 1. Load image

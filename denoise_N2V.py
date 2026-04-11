@@ -11,6 +11,7 @@
 #   python denoise_N2V_v2.py # train + denoise -> denoised_sem_N2V_v2.tif
 # ============================================================
 
+import argparse
 import os
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
@@ -473,16 +474,31 @@ def save_outputs(
 # 7. Main Pipeline
 # ============================================================
 
-def main(
-    patch_size:       int             = 64,
-    batch_size:       int             = 128,
-    num_epochs:       int             = 100,
-    tile_size:        Tuple[int, int] = (256, 256),
-    tile_overlap:     Tuple[int, int] = (48, 48),
-    infer_batch_size: int             = 8,
-) -> None:
-    input_path  = "data/test_sem.tif"
-    output_path = "data/denoised_sem_N2V.tif"
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="N2V SEM denoiser: blind-spot self-supervised denoising."
+    )
+    parser.add_argument('--input',        type=str, default='data/test_sem.tif',
+                        help='Path to input .tif/.tiff/.png image')
+    parser.add_argument('--output',       type=str, default='',
+                        help='Path to output .tif (default: data/denoised_sem_N2V.tif)')
+    parser.add_argument('--epochs',       type=int, default=100)
+    parser.add_argument('--patch_size',   type=int, default=64)
+    parser.add_argument('--batch_size',   type=int, default=128)
+    parser.add_argument('--tile_size',    type=int, default=256,
+                        help='Inference tile size applied to both H and W')
+    parser.add_argument('--tile_overlap', type=int, default=48)
+    parser.add_argument('--infer_batch',  type=int, default=8)
+    args = parser.parse_args()
+
+    input_path       = args.input
+    output_path      = args.output or "data/denoised_sem_N2V.tif"
+    patch_size       = args.patch_size
+    batch_size       = args.batch_size
+    num_epochs       = args.epochs
+    tile_size        = (args.tile_size, args.tile_size)
+    tile_overlap     = (args.tile_overlap, args.tile_overlap)
+    infer_batch_size = args.infer_batch
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 

@@ -25,6 +25,7 @@
 # ============================================================
 
 import math
+import argparse
 import os
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
@@ -637,32 +638,39 @@ def save_outputs(
 # 9. Main Pipeline
 # ============================================================
 
-def main(
-    patch_size:        int             = 64,
-    batch_size:        int             = 128,
-    num_epochs:        int             = 100,
-    n_gaussians:       int             = 3,
-    gmm_pretrain_epochs: int           = 300,
-    tile_size:         Tuple[int, int] = (256, 256),
-    tile_overlap:      Tuple[int, int] = (48, 48),
-    infer_batch_size:  int             = 8,
-) -> None:
-    """
-    Full PN2V pipeline:
-      1. Load image
-      2. Pre-train GMM noise model from neighbor pairs
-      3. Joint training: UNet + GMM with NLL loss
-      4. Tiled inference
-      5. Save outputs + noise model diagnostic plot
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="PN2V SEM denoiser: probabilistic N2V with GMM noise model."
+    )
+    parser.add_argument('--input',              type=str, default='data/test_sem.tif',
+                        help='Path to input .tif/.tiff/.png image')
+    parser.add_argument('--output',             type=str, default='',
+                        help='Path to output .tif (default: data/denoised_sem_PN2V.tif)')
+    parser.add_argument('--epochs',             type=int, default=100)
+    parser.add_argument('--patch_size',         type=int, default=64)
+    parser.add_argument('--batch_size',         type=int, default=128)
+    parser.add_argument('--n_gaussians',        type=int, default=3,
+                        help='Number of GMM components for noise model')
+    parser.add_argument('--gmm_pretrain_epochs',type=int, default=300,
+                        help='Epochs for GMM pre-training; reduce for extreme low-dose SEM')
+    parser.add_argument('--tile_size',          type=int, default=256,
+                        help='Inference tile size applied to both H and W')
+    parser.add_argument('--tile_overlap',       type=int, default=48)
+    parser.add_argument('--infer_batch',        type=int, default=8)
+    args = parser.parse_args()
 
-    Low-count check:
-      If background mean < 0.02, a warning is printed. In extreme low-dose
-      SEM, the signal is too weak for the neighbor-based GMM pre-training to
-      be reliable — consider reducing gmm_pretrain_epochs or using GR2R.
-    """
+    input_path          = args.input
+    output_path         = args.output or "data/denoised_sem_PN2V.tif"
+    patch_size          = args.patch_size
+    batch_size          = args.batch_size
+    num_epochs          = args.epochs
+    n_gaussians         = args.n_gaussians
+    gmm_pretrain_epochs = args.gmm_pretrain_epochs
+    tile_size           = (args.tile_size, args.tile_size)
+    tile_overlap        = (args.tile_overlap, args.tile_overlap)
+    infer_batch_size    = args.infer_batch
+
     os.makedirs("data", exist_ok=True)
-    input_path = "data/test_sem.tif"
-    output_path = "data/denoised_sem_PN2V.tif"
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
