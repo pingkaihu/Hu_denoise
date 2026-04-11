@@ -440,8 +440,8 @@ def save_outputs(
     denoised: np.ndarray,
     img_min:  float,
     img_max:  float,
-    tif_path: str = "data/denoised_sem_N2V_v2.tif",
-    png_path: str = "data/denoising_result_v2.png",
+    tif_path: str = "data/denoised_sem_N2V.tif",
+    png_path: str = "data/denoising_result.png",
 ) -> None:
     """Save denoised TIF (original value range) and side-by-side comparison PNG."""
     denoised_original = (denoised * (img_max - img_min) + img_min).astype(np.float32)
@@ -482,7 +482,7 @@ def main(
     infer_batch_size: int             = 8,
 ) -> None:
     input_path  = "data/test_sem.tif"
-    output_path = "data/denoised_sem_N2V_v2.tif"
+    output_path = "data/denoised_sem_N2V.tif"
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 

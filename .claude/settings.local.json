@@ -23,7 +23,10 @@
       "Bash(mv denoise_log_torch.py denoise_log_N2V.py)",
       "Bash(mv denoise_tf.py denoise_N2V_tf.py)",
       "Bash(mv denoise_torch_intel_mkl.py denoise_N2V_intel_mkl.py)",
-      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\User\\\\.claude\\\\notify.ps1\" -Title \"Claude Code\" -Message \"測試通知 - 正常運作\")"
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\User\\\\.claude\\\\notify.ps1\" -Title \"Claude Code\" -Message \"測試通知 - 正常運作\")",
+      "Bash(grep -l \"Deep Image Prior\\\\|DIP\" \"/h/Hu_denoise/document\"/*)",
+      "Bash(xargs grep:*)",
+      "Bash(ls -la \"/h/Hu_denoise\"/*.py)"
     ]
   }
 }

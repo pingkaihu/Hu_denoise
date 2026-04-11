@@ -22,6 +22,7 @@ pip install torch tifffile matplotlib numpy
 | `denoise_log_N2V.py` | Speckle / multiplicative noise — applies log transform before training | `data/denoised_sem_log_torch.tif` |
 | `denoise_N2V_multi.py` | Multiple images under similar conditions — one shared model | `--output_dir` flag |
 | `denoise_apbsn.py` | AP-BSN (CVPR 2022) — real-world noise, asymmetric PD + blind-spot | configurable |
+| `denoise_DIP.py` | Deep Image Prior (CVPR 2018) — no dataset, single-image generator, no noise model assumption, EMA early stopping; ~3-5 min on GPU | `data/denoised_sem_DIP.tif` |
 | `denoise_N2V_careamics.py` | CAREamics-based pipeline (legacy) | `denoised_sem.tif` |
 
 ## Running the Denoiser
@@ -77,6 +78,8 @@ If inference hits OOM: reduce `tile_size` from `[256,256]` → `[128,128]` → `
 - **Horizontal/vertical scan stripes** → `denoise_N2V_careamics.py` with `struct_n2v_axis`
 - **Multiple images, same conditions** → `denoise_N2V_multi.py`
 - **Real-world complex noise** → `denoise_apbsn.py`
+- **Unknown noise distribution** → `denoise_DIP.py` (no noise model assumption)
+- **N2V leaves checkerboard artifacts** → `denoise_DIP.py`
 - **Unknown noise type** → run BM3D baseline first (`bm3d.bm3d(image, sigma_psd=0.05)`) to visually assess
 
 ## Documentation
