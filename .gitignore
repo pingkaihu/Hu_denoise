@@ -22,6 +22,9 @@ sem_struct_n2v/
 .DS_Store
 Thumbs.db
 
+# Data files
+data/
+
 # Reference data
 reference/
 
