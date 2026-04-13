@@ -554,11 +554,13 @@ def main():
     # ── 3. Load training images & estimate noise ──────────────────────────────
     print("\nLoading training images...")
     train_images  = []
+    train_meta    = []   # (img_min, img_max) per training image
     sigma_per_img = []
     for p in train_paths:
         img, img_min, img_max = load_sem_image(str(p))
         sigma_i = estimate_noise_std(img)
         train_images.append(img)
+        train_meta.append((img_min, img_max))
         sigma_per_img.append(sigma_i)
         print(f"  {p.name}: shape={img.shape}  "
               f"range=[{img_min:.1f},{img_max:.1f}]  σ_est={sigma_i:.5f}")
@@ -613,12 +615,8 @@ def main():
             infer_meta.append((img_min, img_max))
             print(f"  {p.name}: shape={img.shape}")
     else:
-        infer_images = []
-        infer_meta   = []
-        for p, img in zip(train_paths, train_images):
-            _, img_min, img_max = load_sem_image(str(p))
-            infer_images.append(img)
-            infer_meta.append((img_min, img_max))
+        infer_images = train_images
+        infer_meta   = train_meta
 
     # ── 7. Inference on every image ───────────────────────────────────────────
     out_dir = Path(args.output_dir)

@@ -548,6 +548,11 @@ def main():
     train_log_images = []
     for p in train_paths:
         img, img_min, img_max = load_sem_image(str(p))
+        low_frac = float(np.mean(img < 0.05))
+        if low_frac > 0.10:
+            print(f"  [WARNING] {p.name}: {low_frac:.1%} pixels < 0.05 — "
+                  f"clipping floor to 0.01 to stabilise log1p transform")
+            img = np.maximum(img, 0.01)
         log_img, log_min, log_max = apply_log_transform(img)
         train_log_images.append(log_img)
         print(f"  {p.name}: shape={img.shape}  "
@@ -580,6 +585,9 @@ def main():
     infer_data = []   # list of (img_linear, img_min, img_max, log_min, log_max)
     for p in infer_paths:
         img, img_min, img_max = load_sem_image(str(p))
+        low_frac = float(np.mean(img < 0.05))
+        if low_frac > 0.10:
+            img = np.maximum(img, 0.01)
         log_img, log_min, log_max = apply_log_transform(img)
         infer_data.append((img, log_img, img_min, img_max, log_min, log_max))
         print(f"  {p.name}: shape={img.shape}")

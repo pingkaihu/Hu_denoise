@@ -22,7 +22,9 @@ Hu_denoise/
 │
 │   # ── 去噪腳本（多張影像）──
 ├── denoise_N2V_multi.py       # 多張影像共用 N2V 模型
+├── denoise_log_N2V_multi.py   # 多張影像 + 乘性噪聲，log 域共用模型
 ├── denoise_PN2V_multi.py      # 多張影像 + 混合噪聲，共用 GMM
+├── denoise_GR2R_multi.py      # 多張影像 GR2R（全感受野，無盲點遮蔽）
 ├── denoise_apbsn_multi.py     # AP-BSN 多張影像版
 │
 │   # ── 工具腳本 ──
@@ -57,7 +59,9 @@ python denoise_N2V.py
 | 混合噪聲（Poisson + Gamma）| `denoise_PN2V.py` ✦ | `data/denoised_sem_PN2V.tif` |
 | Speckle / 乘性噪聲 | `denoise_log_N2V.py` | `data/denoised_sem_log_torch.tif` |
 | 多張影像，相似條件 | `denoise_N2V_multi.py` | `--output_dir` 旗標指定 |
+| 多張影像，乘性 / 散斑噪聲 | `denoise_log_N2V_multi.py` | `--output_dir` 旗標指定 |
 | 多張影像，混合噪聲 | `denoise_PN2V_multi.py` ✦ | `--output_dir` 旗標指定 |
+| 多張影像，未知加性噪聲（全感受野） | `denoise_GR2R_multi.py` | `--output_dir` 旗標指定 |
 | 真實世界複雜噪聲（非對稱 PD，抑制掃描格柵偽影） | `denoise_apbsn.py` | `data/denoised_apbsn.tif` |
 | 真實世界複雜噪聲（無盲點遮罩，全感受野） | `denoise_GR2R.py` | `data/denoised_sem_GR2R.tif` |
 | 噪聲類型未知 | `denoise_DIP.py` | `data/denoised_sem_DIP.tif` |
@@ -91,7 +95,9 @@ result = bm3d.bm3d(image, sigma_psd=0.05)
 | 腳本 | 說明 |
 |---|---|
 | [denoise_N2V_multi.py](denoise_N2V_multi.py) | 多張影像共用一個 N2V 模型（MSE loss），適用相似拍攝條件。 |
+| [denoise_log_N2V_multi.py](denoise_log_N2V_multi.py) | 多張影像 Log+N2V，log 域共用訓練；適合乘性 / 散斑噪聲多圖場景。 |
 | [denoise_PN2V_multi.py](denoise_PN2V_multi.py) | 多張影像共用 UNet + 共用 GMM；匯集所有影像的像素對，使噪聲統計更豐富。 |
+| [denoise_GR2R_multi.py](denoise_GR2R_multi.py) | 多張影像 GR2R；無盲點遮蔽，全感受野；各圖自動估計 σ 後取均值作再污染強度。 |
 | [denoise_apbsn_multi.py](denoise_apbsn_multi.py) | AP-BSN 多張影像版。 |
 
 ```bash
