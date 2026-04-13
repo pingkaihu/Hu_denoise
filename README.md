@@ -11,14 +11,21 @@ Hu_denoise/
 ├── data/                      # 輸入影像與輸出結果（.tif、.png）
 ├── document/                  # 技術文件與說明指南（.md）
 ├── reference/                 # 學術論文 PDF 及引用索引
+│
+│   # ── 去噪腳本（單張影像）──
 ├── denoise_N2V.py             # 標準單張 N2V（PyTorch 基礎版）
 ├── denoise_PN2V.py            # PN2V 混合噪聲（GMM 噪聲模型）
 ├── denoise_log_N2V.py         # Log + N2V（Speckle 乘性噪聲）
+├── denoise_apbsn.py           # AP-BSN（CVPR 2022，非對稱 PD）
+├── denoise_DIP.py             # Deep Image Prior（CVPR 2018，無噪聲模型假設）
+├── denoise_GR2R.py            # GR2R（CVPR 2021，雙重再破壞，全感受野）
+│
+│   # ── 去噪腳本（多張影像）──
 ├── denoise_N2V_multi.py       # 多張影像共用 N2V 模型
 ├── denoise_PN2V_multi.py      # 多張影像 + 混合噪聲，共用 GMM
-├── denoise_apbsn.py           # AP-BSN CVPR 2022（真實世界噪聲）
 ├── denoise_apbsn_multi.py     # AP-BSN 多張影像版
-├── denoise_DIP.py             # Deep Image Prior（無噪聲模型假設）
+│
+│   # ── 工具腳本 ──
 ├── test_sem.py                # 產生單張合成 SEM 測試影像
 ├── test_gen_multi.py          # 產生多張合成 SEM 測試影像
 └── convert_to_tif.py          # PNG/JPG → TIFF 格式轉換
@@ -51,7 +58,8 @@ python denoise_N2V.py
 | Speckle / 乘性噪聲 | `denoise_log_N2V.py` | `data/denoised_sem_log_torch.tif` |
 | 多張影像，相似條件 | `denoise_N2V_multi.py` | `--output_dir` 旗標指定 |
 | 多張影像，混合噪聲 | `denoise_PN2V_multi.py` ✦ | `--output_dir` 旗標指定 |
-| 真實世界複雜噪聲 | `denoise_apbsn.py` | 可設定 |
+| 真實世界複雜噪聲（非對稱 PD，抑制掃描格柵偽影） | `denoise_apbsn.py` | `data/denoised_apbsn.tif` |
+| 真實世界複雜噪聲（無盲點遮罩，全感受野） | `denoise_GR2R.py` | `data/denoised_sem_GR2R.tif` |
 | 噪聲類型未知 | `denoise_DIP.py` | `data/denoised_sem_DIP.tif` |
 | N2V 留下棋盤格偽影 | `denoise_DIP.py` | `data/denoised_sem_DIP.tif` |
 
@@ -76,6 +84,7 @@ result = bm3d.bm3d(image, sigma_psd=0.05)
 | [denoise_log_N2V.py](denoise_log_N2V.py) | 先用 `log1p` 將乘性 Speckle 轉為加性 AWGN，訓練後再用 `expm1` 還原。 |
 | [denoise_apbsn.py](denoise_apbsn.py) | AP-BSN（CVPR 2022）——非對稱 PD + Blind-Spot Network；SEM 用 `pd_stride=2`，相機 sRGB 用 `pd_stride=5`。 |
 | [denoise_DIP.py](denoise_DIP.py) | Deep Image Prior（CVPR 2018）——無訓練集，以 generator 網路作隱式先驗，EMA 早停；GPU 約 3–5 分鐘。 |
+| [denoise_GR2R.py](denoise_GR2R.py) | GR2R（CVPR 2021）——無盲點遮罩；訓練雙重再破壞 patch 對；全感受野；支援高斯與 Poisson 再破壞（`--poisson`）；自動估計噪聲標準差。 |
 
 ### 多張影像
 
