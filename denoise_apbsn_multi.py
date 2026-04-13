@@ -8,9 +8,14 @@
 # Extension: train ONCE on multiple images from the same instrument,
 # then denoise all images with the shared model.
 #
-# Key difference from denoise_apbsn.py:
-#   APBSNDataset (single PD image) →
-#   MultiImageAPBSNDataset (pool of PD images, one per input image)
+# Differences from denoise_apbsn.py:
+#   + MultiImageAPBSNDataset: pool of PD sub-grids from all training images
+#   + --save_model / --load_model checkpoint support
+#   + Per-image output PNG ({stem}_apbsn_comparison.png)
+#
+# Identical to denoise_apbsn.py:
+#   = BSNUNet, PD inference, avg_shifts logic
+#   = load_sem_image(), save_outputs(), thread env vars
 #
 # Usage:
 #   python denoise_apbsn_multi.py --input_dir ./sem_images --output_dir ./denoised
@@ -572,10 +577,12 @@ def main():
                         help='Path to save trained model weights (.pt)')
     parser.add_argument('--load_model',   type=str, default='',
                         help='Path to load pre-trained weights — skips training entirely')
+    parser.add_argument('--device',       type=str, default=None,
+                        help='Device override: cuda, cpu, cuda:1 … (default: auto)')
     args = parser.parse_args()
 
     avg_shifts = not args.fast
-    device     = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device     = torch.device(args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
     # ── 1. Discover images ────────────────────────────────────────────────────
     infer_paths = find_images(args.input_dir)

@@ -25,6 +25,17 @@
 # pd_stride=2  → SEM (pixel-independent Poisson/Gaussian noise)
 # pd_stride=5  → Real camera sRGB (spatially-correlated ISP noise)
 #
+# Differences from denoise_N2V.py:
+#   + PD (Pixel-Shuffle Downsampling) replaces blind-spot masking
+#   + BSNUNet replaces N2VUNet (LeakyReLU skip-connection architecture)
+#   + avg_shifts: average over r² PD phase offsets at inference
+#   + Full-image inference via PD — no tiling needed (PD reduces resolution)
+#
+# Identical to denoise_N2V.py:
+#   = load_sem_image(), save_outputs() (3-panel PNG, hot colormap)
+#   = thread env vars, torch.set_float32_matmul_precision('high')
+#   = Adam optimizer, MSE loss on masked pixels
+#
 # Usage:
 #   python test_sem.py          # generate test_sem.tif if needed
 #   python denoise_apbsn.py     # train + denoise -> denoised_apbsn.tif
@@ -560,8 +571,8 @@ def save_outputs(
     denoised: np.ndarray,
     img_min:  float,
     img_max:  float,
-    tif_path: str = "data/denoised_apbsn.tif",
-    png_path: str = "data/denoising_apbsn_result.png",
+    tif_path: str = "data/denoised_sem_apbsn.tif",
+    png_path: str = "data/denoising_result_APBSN.png",
 ) -> None:
     """Save denoised TIF (original value range) and side-by-side comparison PNG."""
     denoised_orig = (denoised * (img_max - img_min) + img_min).astype(np.float32)
@@ -627,6 +638,8 @@ def main() -> None:
                         help='Pixel-shuffle stride: 2=SEM, 5=camera sRGB')
     parser.add_argument('--no_avg_shifts', action='store_true',
                         help='Disable AP quality mode (use single-pass inference)')
+    parser.add_argument('--device',        type=str, default=None,
+                        help='Device override: cuda, cpu, cuda:1 … (default: auto)')
     args = parser.parse_args()
 
     input_path  = args.input
@@ -637,7 +650,7 @@ def main() -> None:
     pd_stride   = args.pd_stride
     avg_shifts  = not args.no_avg_shifts
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
     # 1. Load image
     image, img_min, img_max = load_sem_image(input_path)
@@ -673,7 +686,7 @@ def main() -> None:
     save_outputs(
         image, denoised, img_min, img_max,
         tif_path=output_path,
-        png_path="data/denoising_apbsn_result.png",
+        png_path="data/denoising_result_APBSN.png",
     )
 
 

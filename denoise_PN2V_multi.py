@@ -20,6 +20,18 @@
 #   magnification, dose), noise statistics will differ and a shared GMM may average
 #   out signal-dependent variance incorrectly — use denoise_PN2V.py per image instead.
 #
+# Differences from denoise_PN2V.py:
+#   + MultiImagePN2VDataset: patches pooled across all training images
+#   + pretrain_gmm_multi: GMM fitted on pixel pairs from ALL images
+#   + --save_model / --load_model checkpoint stores UNet + GMM states
+#   + Per-image output PNG ({stem}_comparison.png)
+#
+# Identical to denoise_PN2V.py:
+#   = GMMNoiseModel, NLL loss formulation
+#   = DoubleConvBlock, N2VUNet, load_sem_image
+#   = Vectorized blind-spot masking, batched tiled inference
+#
+
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 #
 # Usage:
@@ -678,9 +690,11 @@ def main():
     parser.add_argument('--load_model',  type=str, default='',
                         help='Path to load checkpoint — skips training entirely. '
                              'The checkpoint must have been saved by this script (dict format).')
+    parser.add_argument('--device',      type=str, default=None,
+                        help='Device override: cuda, cpu, cuda:1 … (default: auto)')
     args = parser.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
     # ── 1. Discover inference images ─────────────────────────────────────────
     infer_paths = find_images(args.input_dir)

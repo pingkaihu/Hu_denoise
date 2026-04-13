@@ -512,14 +512,17 @@ def main():
                         help='Photon scale for Poisson re-corruption (used only with --poisson). '
                              'Higher values → less variance per re-corruption. '
                              'Tune to match estimated photon count range of your SEM.')
+    parser.add_argument('--device',       type=str,   default=None,
+                        help='Device override: cuda, cpu, cuda:1 … (default: auto)')
     args = parser.parse_args()
 
     os.makedirs('data', exist_ok=True)
 
     tif_out = args.output if args.output else 'data/denoised_sem_GR2R.tif'
-    png_out = tif_out.replace('.tif', '_comparison.png').replace('.tiff', '_comparison.png')
+    png_out = (tif_out.replace('.tif', '_comparison.png').replace('.tiff', '_comparison.png')
+               if args.output else 'data/denoising_result_GR2R.png')
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
     # ── 1. Load image ────────────────────────────────────────────────────────
     print(f"\nLoading: {args.input}")

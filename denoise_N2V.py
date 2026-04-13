@@ -442,7 +442,7 @@ def save_outputs(
     img_min:  float,
     img_max:  float,
     tif_path: str = "data/denoised_sem_N2V.tif",
-    png_path: str = "data/denoising_result.png",
+    png_path: str = "data/denoising_result_N2V.png",
 ) -> None:
     """Save denoised TIF (original value range) and side-by-side comparison PNG."""
     denoised_original = (denoised * (img_max - img_min) + img_min).astype(np.float32)
@@ -489,6 +489,8 @@ def main() -> None:
                         help='Inference tile size applied to both H and W')
     parser.add_argument('--tile_overlap', type=int, default=48)
     parser.add_argument('--infer_batch',  type=int, default=8)
+    parser.add_argument('--device',      type=str,   default=None,
+                        help='Device override: cuda, cpu, cuda:1 … (default: auto)')
     args = parser.parse_args()
 
     input_path       = args.input
@@ -500,7 +502,7 @@ def main() -> None:
     tile_overlap     = (args.tile_overlap, args.tile_overlap)
     infer_batch_size = args.infer_batch
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
     image, img_min, img_max = load_sem_image(input_path)
     print(f"Image shape: {image.shape},  range: [{img_min:.3f}, {img_max:.3f}]")

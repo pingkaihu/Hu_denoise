@@ -657,6 +657,8 @@ def main() -> None:
                         help='Inference tile size applied to both H and W')
     parser.add_argument('--tile_overlap',       type=int, default=48)
     parser.add_argument('--infer_batch',        type=int, default=8)
+    parser.add_argument('--device',             type=str, default=None,
+                        help='Device override: cuda, cpu, cuda:1 … (default: auto)')
     args = parser.parse_args()
 
     input_path          = args.input
@@ -672,7 +674,7 @@ def main() -> None:
 
     os.makedirs("data", exist_ok=True)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
     # --- Load ---
     image, img_min, img_max = load_sem_image(input_path)

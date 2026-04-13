@@ -7,6 +7,17 @@
 #   log(y) = log(x) + log(n)
 # This restores the N2V pixel-independence assumption for speckle.
 #
+# Differences from denoise_N2V.py:
+#   + log1p applied to image on load; expm1 applied after prediction
+#   + use_log_transform flag threads through load_sem_image / save_outputs
+#   + Low-count floor clip guards near-zero pixels before transform
+#
+# Identical to denoise_N2V.py:
+#   = DoubleConvBlock, N2VUNet architecture (4-level, base_features=32)
+#   = Vectorized blind-spot masking (numpy, no Python loops)
+#   = Batched tiled inference with per-axis reflection padding
+#   = save_outputs (3-panel PNG, hot colormap)
+#
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 # Usage:
 #   python test_sem.py              # generate synthetic test image
@@ -477,7 +488,7 @@ def save_outputs(
     img_min:  float,
     img_max:  float,
     tif_path: str = "data/denoised_sem_log_torch.tif",
-    png_path: str = "data/denoising_log_result.png",
+    png_path: str = "data/denoising_result_LOG.png",
 ) -> None:
     """Save denoised TIF (original value range) and side-by-side comparison PNG."""
     # Restore original grayscale range before saving
@@ -526,6 +537,8 @@ def main() -> None:
     parser.add_argument('--tile_size',    type=int, default=256,
                         help='Inference tile size applied to both H and W')
     parser.add_argument('--tile_overlap', type=int, default=48)
+    parser.add_argument('--device',      type=str,   default=None,
+                        help='Device override: cuda, cpu, cuda:1 … (default: auto)')
     args = parser.parse_args()
 
     input_path   = args.input
@@ -536,7 +549,7 @@ def main() -> None:
     tile_size    = (args.tile_size, args.tile_size)
     tile_overlap = (args.tile_overlap, args.tile_overlap)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
     # 1. Load image (normalized to [0, 1], original range preserved)
     image, img_min, img_max = load_sem_image(input_path)

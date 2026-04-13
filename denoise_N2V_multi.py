@@ -4,6 +4,18 @@
 # Train ONCE on a batch of images acquired under similar conditions,
 # then denoise every image with the same model.
 #
+# Differences from denoise_N2V.py:
+#   + MultiImageN2VDataset: patches drawn uniformly from a pool of images
+#   + --save_model / --load_model checkpoint support
+#   + Per-image output PNG ({stem}_comparison.png) instead of single file
+#   + --train_dir allows training on a subset, inference on all
+#
+# Identical to denoise_N2V.py:
+#   = DoubleConvBlock, N2VUNet, load_sem_image
+#   = Vectorized blind-spot masking (numpy, no Python loops)
+#   = Batched tiled inference with per-axis reflection padding
+#   = MSE loss on masked pixels only
+#
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 #
 # Usage:
@@ -476,9 +488,11 @@ def main():
                         help='Path to save trained model weights (.pt)')
     parser.add_argument('--load_model',   type=str, default='',
                         help='Path to load pre-trained weights — skips training entirely')
+    parser.add_argument('--device',       type=str, default=None,
+                        help='Device override: cuda, cpu, cuda:1 … (default: auto)')
     args = parser.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
     # ── 1. Discover inference images ─────────────────────────────────────────
     infer_paths = find_images(args.input_dir)

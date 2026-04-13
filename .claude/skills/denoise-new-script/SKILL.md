@@ -35,11 +35,13 @@ and immediately see they belong to the same codebase.
 
    | Document | When to read it |
    |---|---|
-   | `document/N2V_optimization.md` | **Always** — read sections 1, 2, 4 only; these three are the ones every script should inherit (vectorized masking, batched inference, reflection padding). Skip section 3 (physical train/val split — evaluated and not recommended for general use) and section 5 (log transform — only applies to the dedicated log-variant script). |
    | `document/guide.md` | When you need theoretical background on the algorithm the user requested |
    | `document/settings_guide.md` | When setting parameter defaults — this project runs on RTX 3080 (10 GB), so use those as the baseline |
-   | `document/critique.md` | When the algorithm involves GAT, PN2V, or mixed-noise models — read to avoid known pitfalls (e.g., GAT+PN2V redundancy) |
    | `document/Mixed_Noise_Speckle_ShotNoise_Guide.md` | When the target noise is mixed (Poisson + Gaussian) or speckle |
+
+   Implementation patterns (vectorized masking, batched inference, reflection padding) and known
+   pitfalls (GAT+PN2V redundancy, low-count instability, blind-spot oversmoothing, batch drift)
+   are documented inline in the sections below — no external document read needed.
 
 ---
 
@@ -98,10 +100,33 @@ returns `(image, img_min, img_max)`.
 **`N2VUNet`** — 4-level encoder-decoder, `base_features=32`, input must be
 divisible by 8.
 
-**`_compute_padding` + `predict_tiled`** — reflection padding per-axis
-independently (Opt 4), Hann-window blending, batched GPU inference with
-`infer_batch_size=8` (Opt 2). Use the version from `denoise_N2V_multi.py`
-which has the per-axis padding fix (not the simpler version in `denoise_N2V.py`).
+**`Dataset.__getitem__` masking** — vectorized numpy, no Python loops.
+This is the primary DataLoader CPU bottleneck; never use a `for` loop over
+masked pixels:
+```python
+dr = self.rng.integers(-rad, rad + 1, size=self.n_masked)
+dc = self.rng.integers(-rad, rad + 1, size=self.n_masked)
+zero_mask = (dr == 0) & (dc == 0)
+if np.any(zero_mask):
+    dr[zero_mask] += self.rng.choice([-1, 1], size=int(zero_mask.sum()))
+nr = np.clip(rows + dr, 0, P - 1)
+nc = np.clip(cols + dc, 0, P - 1)
+corrupted[rows, cols] = patch[nr, nc]
+mask[rows, cols] = 1.0
+```
+
+**`_compute_padding` + `predict_tiled`** — reflection padding **per-axis
+independently** (not a single shared max — that is the bug in `denoise_N2V.py`),
+Hann-window blending, batched GPU inference with `infer_batch_size=8`.
+Key padding pattern:
+```python
+pad_h = max(0, tile_h - H, (8 - H % 8) % 8)
+pad_w = max(0, tile_w - W, (8 - W % 8) % 8)
+padded = np.pad(image, ((0, pad_h), (0, pad_w)), mode='reflect')
+# ... inference on padded ...
+denoised = denoised_pad[:H, :W]   # crop back to original size
+```
+Use the version from `denoise_N2V_multi.py`.
 
 **`save_outputs`** — saves `.tif` in original value range, then a 3-panel PNG:
 Original | Denoised | `abs(diff) * 3` on `'hot'` colormap.
@@ -122,10 +147,46 @@ The novel part lives between sections 3–5. Examples:
 | Log-N2V | `log1p` on load, `expm1` on output; rest unchanged |
 | Noise2Self | J-invariant masking (each pixel predicts itself via partitioned subsets) |
 | HDN | Hierarchical VAE encoder; KL + reconstruction loss |
-| Recorrupted-to-Recorrupted (R2R) | Re-corrupt input twice; loss on both outputs |
+| Recorrupted-to-Recorrupted (R2R) / GR2R | Re-corrupt input twice with Gaussian or Poisson noise; MSE on all pixels (no masking); auto-estimate noise std via Laplacian MAD — see `denoise_GR2R.py` |
+| AP-BSN | Asymmetric pixel-shuffle downsampling + blind-spot network; no noise model required; separate PD stride for train vs. inference — see `denoise_apbsn.py` |
 
 Document the difference clearly in the file header's "Differences from
 denoise_N2V.py" block.
+
+---
+
+## Known Pitfalls
+
+Decisions and failure modes already investigated in this project — don't repeat them.
+
+**1. Never combine GAT + PN2V**  
+GAT converts Poisson-Gaussian noise into AWGN. If it works correctly, standard N2V with MSE
+is already the mathematical optimum — PN2V adds nothing. Worse, the GMM will overfit GAT's
+low-signal artefacts and treat them as noise structure.  
+Rule: GAT → use standard N2V. Skipping GAT → use PN2V on raw pixel values.
+
+**2. Log / Anscombe transforms are unstable at low counts**  
+When many pixels are near zero (dark SEM backgrounds, low-dose images), `log1p` and `sqrt`
+amplify noise non-linearly. The inverse transform produces hazy grey backgrounds or false
+structure. Before applying any such transform, run a diagnostic:
+```python
+low_frac = np.mean(image < 0.05)   # in normalised [0,1] space
+if low_frac > 0.10:
+    # clip a floor or switch to PN2V / DIP instead
+    image = np.maximum(image, 0.01)
+```
+
+**3. Expanding the blind-spot radius causes oversmoothing**  
+A larger masked region forces predictions from 2–3 pixels away. For SEM images where fine
+structures (nanowires, grain boundaries) can span 1–2 pixels, this irrecoverably smears detail.
+Keep the default `rad = 2` (neighbourhood size). Do not increase it to handle spatially-
+correlated speckle — use AP-BSN or DIP instead.
+
+**4. Multi-image scripts: noise level drift**  
+A model trained on image 1 may hallucinate on image 50 if SEM charging, beam current drift,
+or slight defocus shifted the noise floor. For `_multi` scripts applied to long acquisition
+series: support an optional `--histogram_match` flag that normalises each image against the
+training set's intensity distribution before inference.
 
 ---
 
@@ -146,11 +207,13 @@ add a row with the filename, when to use it, and the output path.
 
 Use `argparse` in `main()`. Minimum args:
 ```python
---input   # path to input .tif (default: 'data/test_sem.tif')
---output  # path to output .tif (default: auto-set per algorithm)
---epochs  # int (default: 100)
+--input       # path to input .tif (default: 'data/test_sem.tif')
+--output      # path to output .tif (default: auto-set per algorithm)
+--epochs      # int (default: 100)
 --patch_size  # int (default: 64)
 --batch_size  # int (default: 128)
+--tile_size   # int (default: 256) — reduce to 128 or 64 if inference hits OOM
+--device      # str (default: 'cuda' if available else 'cpu')
 ```
 
 Add algorithm-specific args as needed (e.g., `--n_gaussians` for PN2V).
@@ -163,4 +226,19 @@ Add algorithm-specific args as needed (e.g., `--n_gaussians` for PN2V).
 - [ ] `data/` directory created with `os.makedirs("data", exist_ok=True)`
 - [ ] `os.environ` thread vars set before any import that might fork
 - [ ] File header lists paper, differences, and identical sections
-- [ ] CLAUDE.md Script Selection Guide updated with new row
+- [ ] `--tile_size` and `--device` args present in argparse
+- [ ] CLAUDE.md **Script Selection Guide** table updated with new row
+- [ ] CLAUDE.md **Noise Type Decision** section updated with new algorithm entry
+- [ ] Script runs end-to-end with defaults: `python <script>.py` succeeds on `data/test_sem.tif`
+
+---
+
+## Early stopping
+
+For algorithms that overfit without a stopping criterion (generative models, deep priors, VAE-based):
+
+- Track a smoothed validation loss with EMA: `ema = 0.9 * ema + 0.1 * val_loss`
+- Stop when EMA stops improving for N patience steps
+- Reference implementation: `denoise_DIP.py`
+
+Standard discriminative scripts (N2V variants, GR2R, AP-BSN) do **not** need early stopping — use fixed epochs.
