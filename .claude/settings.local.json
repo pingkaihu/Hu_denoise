@@ -27,7 +27,12 @@
       "Bash(grep -l \"Deep Image Prior\\\\|DIP\" \"/h/Hu_denoise/document\"/*)",
       "Bash(xargs grep:*)",
       "Bash(ls -la \"/h/Hu_denoise\"/*.py)",
-      "Bash(ls h:\\\\\\\\Hu_denoise\\\\\\\\*.py)"
+      "Bash(ls h:\\\\\\\\Hu_denoise\\\\\\\\*.py)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:openaccess.thecvf.com)",
+      "WebFetch(domain:goldsequence.blogspot.com)",
+      "WebFetch(domain:loli.github.io)"
     ]
   }
 }
