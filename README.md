@@ -26,6 +26,8 @@ Hu_denoise/
 ├── denoise_PN2V_multi.py      # 多張影像 + 混合噪聲，共用 GMM
 ├── denoise_GR2R_multi.py      # 多張影像 GR2R（全感受野，無盲點遮蔽）
 ├── denoise_apbsn_multi.py     # AP-BSN 多張影像版
+├── denoise_apbsn_faithful.py  # AP-BSN 論文完整版（DBSNl + R3，單張）
+├── denoise_apbsn_faithful_multi.py # AP-BSN 論文完整版（多張影像）
 │
 │   # ── 工具腳本 ──
 ├── test_sem.py                # 產生單張合成 SEM 測試影像
@@ -63,6 +65,8 @@ python denoise_N2V.py
 | 多張影像，混合噪聲 | `denoise_PN2V_multi.py` ✦ | `--output_dir` 旗標指定 |
 | 多張影像，未知加性噪聲（全感受野） | `denoise_GR2R_multi.py` | `--output_dir` 旗標指定 |
 | 真實世界複雜噪聲（非對稱 PD，抑制掃描格柵偽影） | `denoise_apbsn.py` | `data/denoised_apbsn.tif` |
+| 真實世界複雜噪聲（論文完整版 DBSNl + R3） | `denoise_apbsn_faithful.py` | `data/denoised_sem_apbsn_faithful.tif` |
+| 同上，多張影像 | `denoise_apbsn_faithful_multi.py` | `--output_dir` 旗標指定 |
 | 真實世界複雜噪聲（無盲點遮罩，全感受野） | `denoise_GR2R.py` | `data/denoised_sem_GR2R.tif` |
 | 噪聲類型未知 | `denoise_DIP.py` | `data/denoised_sem_DIP.tif` |
 | N2V 留下棋盤格偽影 | `denoise_DIP.py` | `data/denoised_sem_DIP.tif` |
@@ -87,6 +91,7 @@ result = bm3d.bm3d(image, sigma_psd=0.05)
 | [denoise_PN2V.py](denoise_PN2V.py) | PN2V——GMM 噪聲模型，直接對 Poisson-Gamma 混合噪聲建模；含低計數診斷。 |
 | [denoise_log_N2V.py](denoise_log_N2V.py) | 先用 `log1p` 將乘性 Speckle 轉為加性 AWGN，訓練後再用 `expm1` 還原。 |
 | [denoise_apbsn.py](denoise_apbsn.py) | AP-BSN（CVPR 2022）——非對稱 PD + Blind-Spot Network；SEM 用 `pd_stride=2`，相機 sRGB 用 `pd_stride=5`。 |
+| [denoise_apbsn_faithful.py](denoise_apbsn_faithful.py) | AP-BSN 論文完整版——DBSNl（CentralMaskedConv2d + 擴張分支）+ L1 全像素 loss + 非對稱 PD（pd_a 訓練 / pd_b 推論）+ R3 隨機替換細化（T=8, p=0.16）。 |
 | [denoise_DIP.py](denoise_DIP.py) | Deep Image Prior（CVPR 2018）——無訓練集，以 generator 網路作隱式先驗，EMA 早停；GPU 約 3–5 分鐘。 |
 | [denoise_GR2R.py](denoise_GR2R.py) | GR2R（CVPR 2021）——無盲點遮罩；訓練雙重再破壞 patch 對；全感受野；支援高斯與 Poisson 再破壞（`--poisson`）；自動估計噪聲標準差。 |
 
@@ -99,6 +104,7 @@ result = bm3d.bm3d(image, sigma_psd=0.05)
 | [denoise_PN2V_multi.py](denoise_PN2V_multi.py) | 多張影像共用 UNet + 共用 GMM；匯集所有影像的像素對，使噪聲統計更豐富。 |
 | [denoise_GR2R_multi.py](denoise_GR2R_multi.py) | 多張影像 GR2R；無盲點遮蔽，全感受野；各圖自動估計 σ 後取均值作再污染強度。 |
 | [denoise_apbsn_multi.py](denoise_apbsn_multi.py) | AP-BSN 多張影像版。 |
+| [denoise_apbsn_faithful_multi.py](denoise_apbsn_faithful_multi.py) | AP-BSN 論文完整版多張影像——共用一個 DBSNl 模型訓練所有影像；R3 逐圖套用；支援 `--train_dir` / `--save_model` / `--load_model`。 |
 
 ```bash
 # 多張影像去噪（N2V 或 PN2V 皆同介面）

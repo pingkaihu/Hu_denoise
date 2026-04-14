@@ -24,10 +24,12 @@ pip install torch tifffile matplotlib numpy
 | `denoise_N2V_multi.py` | Multiple images under similar conditions — one shared N2V model (MSE loss) | `--output_dir` flag |
 | `denoise_log_N2V_multi.py` | **Multiple images, speckle/multiplicative noise** — log-domain shared N2V; per-image low-count floor diagnostic; same CLI as N2V_multi | `--output_dir` flag |
 | `denoise_PN2V_multi.py` | **Multiple images, mixed noise** — shared UNet + shared GMM; pools pixel pairs from all images for richer noise statistics; same CLI as N2V_multi | `--output_dir` flag |
-| `denoise_GR2R_multi.py` | **Multiple images, unknown additive noise** — GR2R full-context receptive field; per-image σ auto-estimated then averaged; supports `--poisson`; same CLI as N2V_multi | `--output_dir` flag |
+| `denoise_GR2R_multi.py` | **Multiple images, unknown additive / shot noise** — R2R shared-ε pair (Gaussian) or GR2R Binomial splitting (Poisson, `--poisson --binomial_alpha 0.15`); per-image σ auto-estimated; `--mc_samples` for MC inference averaging; `--save_model`/`--load_model` | `--output_dir` flag |
 | `denoise_apbsn.py` | AP-BSN (CVPR 2022) — real-world noise, asymmetric PD + blind-spot | configurable |
+| `denoise_apbsn_faithful.py` | **AP-BSN paper-faithful** — DBSNl architecture (CentralMaskedConv2d, dilated branches), L1 loss on all pixels, asymmetric PD (pd_a train ≠ pd_b infer), R3 refinement | `data/denoised_sem_apbsn_faithful.tif` |
+| `denoise_apbsn_faithful_multi.py` | **AP-BSN faithful, multiple images** — same DBSNl + R3; trains one shared model on all images; `--train_dir` / `--save_model` / `--load_model` | `--output_dir` flag |
 | `denoise_DIP.py` | Deep Image Prior (CVPR 2018) — no dataset, single-image generator, no noise model assumption, EMA early stopping; ~3-5 min on GPU | `data/denoised_sem_DIP.tif` |
-| `denoise_GR2R.py` | **GR2R (CVPR 2021)** — no blind-spot masking; trains on double-recorrupted patch pairs; full-context receptive field; supports Gaussian & Poisson re-corruption (`--poisson`); auto-estimates noise std | `data/denoised_sem_GR2R.tif` |
+| `denoise_GR2R.py` | **R2R/GR2R** — no blind-spot masking; Gaussian: R2R shared-ε pair (Pang et al. CVPR 2021); Poisson shot noise: GR2R Binomial splitting (`--poisson --binomial_alpha 0.15`, Monroy et al. CVPR 2025); `--mc_samples` for MC inference averaging; auto-estimates noise std | `data/denoised_sem_GR2R.tif` |
 | `denoise_N2V_careamics.py` | CAREamics-based pipeline (legacy) | `denoised_sem.tif` |
 
 ## Running the Denoiser
@@ -83,8 +85,11 @@ If inference hits OOM: reduce `tile_size` from `[256,256]` → `[128,128]` → `
 - **Multiple images, speckle/multiplicative** → `denoise_log_N2V_multi.py`
 - **Horizontal/vertical scan stripes** → `denoise_N2V_careamics.py` with `struct_n2v_axis`
 - **Multiple images, same conditions** → `denoise_N2V_multi.py`
-- **Multiple images, unknown additive noise (full receptive field)** → `denoise_GR2R_multi.py`
+- **Single image, Poisson/Gaussian additive noise (full receptive field)** → `denoise_GR2R.py`
+- **Multiple images, unknown additive / Poisson shot noise** → `denoise_GR2R_multi.py`
 - **Real-world complex noise** → `denoise_apbsn.py`
+- **Real-world complex noise, paper-faithful DBSNl + R3** → `denoise_apbsn_faithful.py`
+- **Same as above, multiple images** → `denoise_apbsn_faithful_multi.py`
 - **Unknown noise distribution** → `denoise_DIP.py` (no noise model assumption)
 - **N2V leaves checkerboard artifacts** → `denoise_DIP.py`
 - **Unknown noise type** → run BM3D baseline first (`bm3d.bm3d(image, sigma_psd=0.05)`) to visually assess

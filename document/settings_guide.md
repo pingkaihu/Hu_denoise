@@ -1,7 +1,7 @@
 # 參數設定指南
 
 **環境假設：** NVIDIA RTX 3080 (10 GB VRAM)，Windows，Python 3.12  
-**適用腳本：** `denoise_N2V.py`、`denoise_log_N2V.py`、`denoise_N2V_multi.py`、`denoise_log_N2V_multi.py`、`denoise_PN2V.py`、`denoise_PN2V_multi.py`、`denoise_apbsn.py`、`denoise_apbsn_multi.py`、`denoise_GR2R.py`、`denoise_GR2R_multi.py`、`denoise_DIP.py`
+**適用腳本：** `denoise_N2V.py`、`denoise_log_N2V.py`、`denoise_N2V_multi.py`、`denoise_log_N2V_multi.py`、`denoise_PN2V.py`、`denoise_PN2V_multi.py`、`denoise_apbsn.py`、`denoise_apbsn_multi.py`、`denoise_apbsn_faithful.py`、`denoise_apbsn_faithful_multi.py`、`denoise_GR2R.py`、`denoise_GR2R_multi.py`、`denoise_DIP.py`
 
 > **時間估計說明：** 以 RTX 3080 實測為基準，`num_workers=0`。  
 > 首次執行因 CUDA kernel 編譯會額外多 1–2 分鐘。  
@@ -34,7 +34,7 @@
 
 ```
 影像有水平 / 垂直掃描線條紋？
-  └─ 是 → denoise_apbsn.py（空間相關噪聲）
+  └─ 是 → denoise_apbsn.py（空間相關噪聲；論文完整版 → denoise_apbsn_faithful.py）
   └─ 否 ↓
 
 多張相似條件的影像？
@@ -42,7 +42,7 @@
   └─ 是，噪聲混合複雜  → denoise_PN2V_multi.py
   └─ 是，乘性 / 散斑   → denoise_log_N2V_multi.py
   └─ 是，未知加性噪聲  → denoise_GR2R_multi.py
-  └─ 是，掃描線問題    → denoise_apbsn_multi.py
+  └─ 是，掃描線問題    → denoise_apbsn_multi.py（或 denoise_apbsn_faithful_multi.py 論文完整版）
   └─ 否（單張）↓
 
 不確定噪聲類型，或 N2V 留有格狀偽影？
@@ -72,6 +72,8 @@
 | `denoise_PN2V_multi.py` | 混合噪聲，多圖 | 多張 | 共用 UNet + 共用 GMM |
 | `denoise_apbsn.py` | 空間相關噪聲 / 掃描線 | 單張 | PD 域盲點訓練，無需 tiling |
 | `denoise_apbsn_multi.py` | 空間相關噪聲，多圖 | 多張 | 同上，支援 save/load |
+| `denoise_apbsn_faithful.py` | 真實複雜噪聲（論文完整版） | 單張 | DBSNl + L1 + 非對稱 PD + R3 |
+| `denoise_apbsn_faithful_multi.py` | 真實複雜噪聲，多圖（論文完整版） | 多張 | 共用 DBSNl + 逐圖 R3，支援 save/load |
 | `denoise_GR2R.py` | 未知加性噪聲 | 單張 | 再污染訓練對，完整感受野 |
 | `denoise_GR2R_multi.py` | 未知加性噪聲，多圖 | 多張 | 共用模型，噪聲 σ 各圖估計後平均 |
 | `denoise_DIP.py` | 無假設（任意） | 單張 | 無需噪聲模型，EMA 早停 |
@@ -358,6 +360,84 @@ python denoise_apbsn_multi.py --input_dir ./new_imgs --load_model apbsn_model.pt
 | `--avg_shifts` | 預設開啟；與 `--fast` 互斥 |
 | `--fast` | 開啟後強制單次推論（關閉 avg_shifts），速度快 r² 倍但可能留 PD 格紋 |
 | `--save_model` / `--load_model` | 儲存 / 載入模型（`.pt`） |
+
+---
+
+### `denoise_apbsn_faithful.py`（單張，論文完整版）
+
+**與 `denoise_apbsn.py` 的差異：**
+
+| 項目 | `denoise_apbsn.py` | `denoise_apbsn_faithful.py` |
+|---|---|---|
+| 架構 | BSNUNet（標準 U-Net） | DBSNl（擴張盲點網路） |
+| 盲點機制 | 訓練期遮罩（N2V 風格） | CentralMaskedConv2d（架構層級） |
+| 損失函數 | MSE（僅遮罩像素） | L1（所有像素） |
+| 推論後處理 | avg_shifts（平均位移） | R3 隨機替換細化（T=8, p=0.16） |
+| PD 步幅 | 單一 pd_stride | pd_a（訓練）≠ pd_b（推論） |
+
+```bash
+# SEM 像素獨立噪聲（預設）
+python denoise_apbsn_faithful.py --input data/test_sem.tif
+
+# 相機 sRGB 空間相關噪聲
+python denoise_apbsn_faithful.py --pd_a 5 --pd_b 2 --base_ch 128
+
+# 快速預覽（跳過 R3）
+python denoise_apbsn_faithful.py --no_r3
+```
+
+#### 核心參數
+
+| 參數 | 預設值 | 說明 |
+|---|---|---|
+| `--pd_a` | `2` | 訓練 PD 步幅（SEM: 2；相機 sRGB: 5） |
+| `--pd_b` | `2` | 推論 PD 步幅（論文建議: 2） |
+| `--base_ch` | `64` | DBSNl 每分支通道數（論文: 128；SEM 用 64 已足夠） |
+| `--num_module` | `9` | 每分支的 DCl 殘差塊數（論文: 9） |
+| `--R3_T` | `8` | R3 細化次數（論文: 8） |
+| `--R3_p` | `0.16` | R3 隨機替換比例（論文: 0.16） |
+| `--no_r3` | — | 停用 R3，只做單次推論（快速預覽） |
+
+#### 場景快速對照
+
+| 使用場景 | `pd_a` | `pd_b` | `base_ch` | `epochs` | R3 |
+|---|---|---|---|---|---|
+| SEM 像素獨立噪聲 | `2` | `2` | `64` | `100` | 開啟 |
+| 相機 sRGB 噪聲 | `5` | `2` | `128` | `100` | 開啟 |
+| 快速預覽 | `2` | `2` | `32` | `50` | 關閉 |
+| GPU RAM 不足（< 6 GB） | `2` | `2` | `32` | `100` | 開啟 |
+
+---
+
+### `denoise_apbsn_faithful_multi.py`（多張，論文完整版）
+
+**何時使用：** 多張影像需要論文完整 DBSNl 架構（空間相關噪聲、相機 sRGB 噪聲、或對 `denoise_apbsn_multi.py` 效果不滿意時）。
+
+```bash
+python denoise_apbsn_faithful_multi.py \
+    --input_dir ./sem_images --output_dir ./denoised
+
+# 相機 sRGB 噪聲
+python denoise_apbsn_faithful_multi.py \
+    --input_dir ./sem_images --output_dir ./denoised \
+    --pd_a 5 --pd_b 2 --base_ch 128
+
+# 儲存 / 載入
+python denoise_apbsn_faithful_multi.py \
+    --input_dir ./sem_images --save_model apbsn_faithful.pt
+python denoise_apbsn_faithful_multi.py \
+    --input_dir ./new_imgs --load_model apbsn_faithful.pt
+```
+
+| 參數 | 說明 |
+|---|---|
+| `--input_dir` | 推論用影像目錄 |
+| `--train_dir` | 僅訓練用目錄（未指定時同 `--input_dir`） |
+| `--output_dir` | 輸出目錄（預設 `denoised`） |
+| `--pd_a` / `--pd_b` | 訓練 / 推論 PD 步幅（同單張版） |
+| `--base_ch` | DBSNl 通道數（預設 64） |
+| `--no_r3` | 停用 R3（快速模式） |
+| `--save_model` / `--load_model` | 儲存 / 載入模型（`.pt`）；`--load_model` 跳過訓練 |
 
 ---
 

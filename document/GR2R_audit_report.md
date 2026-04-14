@@ -1,7 +1,8 @@
 # `denoise_GR2R.py` 演算法正確性稽核報告
 
 **稽核日期：** 2026-04-14
-**稽核對象：** `h:/Hu_denoise/denoise_GR2R.py`
+**修訂日期：** 2026-04-15（偏差 1、2、3、5 已實施修正）
+**稽核對象：** `h:/Hu_denoise/denoise_GR2R.py`、`h:/Hu_denoise/denoise_GR2R_multi.py`
 **對照文獻：**
 - R2R: Pang et al., "Recorrupted-to-Recorrupted: Unsupervised Deep Learning for Image Denoising," CVPR 2021. [[arXiv:2102.02234]](https://arxiv.org/abs/2102.02234) · [[GitHub]](https://github.com/PangTongyao/Recorrupted-to-Recorrupted-Unsupervised-Deep-Learning-for-Image-Denoising)
 - GR2R: Monroy, Bacca, Tachella, "Generalized Recorrupted-to-Recorrupted: Self-Supervised Learning Beyond Gaussian Noise," CVPR 2025. [[arXiv:2412.04648]](https://arxiv.org/abs/2412.04648) · [[GitHub]](https://github.com/bemc22/GeneralizedR2R)
@@ -10,7 +11,7 @@
 
 ## 執行摘要
 
-`denoise_GR2R.py` 實作了「雙重再污染 (recorrupted-to-recorrupted)」這一自監督去噪框架的核心精神，並在 SEM 影像去噪上提供可用的效果。然而，程式碼中存在 **5 項技術偏差**，涵蓋論文作者署名錯誤、再污染公式非標準化、Poisson 再污染機制與論文不符，以及推論期間缺少 Monte Carlo 平均。每項偏差的影響等級與修正建議詳列如下。
+`denoise_GR2R.py` 實作了「雙重再污染 (recorrupted-to-recorrupted)」這一自監督去噪框架的核心精神，並在 SEM 影像去噪上提供可用的效果。稽核發現 **5 項技術偏差**；**偏差 1、2、3、5 已於 2026-04-15 修正**（偏差 4 為刻意保留的設計選擇，詳見下文）。每項偏差的影響等級、修正方式與修正後狀態詳列如下。
 
 ---
 
@@ -56,13 +57,13 @@ $$y_1 = y + \sqrt{\frac{\alpha}{1-\alpha}} \cdot \varepsilon, \quad \varepsilon 
 
 ## 二、偏差一覽
 
-| # | 偏差項目 | 程式位置 | 嚴重程度 |
+| # | 偏差項目 | 嚴重程度 | 狀態 |
 |---|---|---|---|
-| 1 | **R2R 作者署名錯誤** | 第 6 行 header 註解 | 低（僅文件） |
-| 2 | **Gaussian 再污染公式非標準** | `recorrupt_gaussian()` L167–174 | 中 |
-| 3 | **Poisson 再污染非 GR2R Binomial 分裂** | `recorrupt_poisson()` L177–192 | 中 |
-| 4 | **$\alpha$ 參數化與論文不同** | `main()` L540–541 | 低至中 |
-| 5 | **推論期間缺少 Monte Carlo 平均** | `predict_tiled()` 整個函式 | 低至中 |
+| 1 | **R2R 作者署名錯誤**（Guo → Pang et al.） | 低（僅文件） | ✅ 已修正 |
+| 2 | **Gaussian 再污染：對稱獨立雙採樣 → R2R 共享 ε 對** | 中 | ✅ 已修正 |
+| 3 | **Poisson 再污染：獨立重採樣 → GR2R Binomial 分裂** | 中 | ✅ 已修正 |
+| 4 | **$\alpha$ 參數語義（線性縮放 vs 論文公式）** | 低至中 | 🔵 刻意保留（更直覺） |
+| 5 | **推論缺少 Monte Carlo 平均**（$J=1$ → `--mc_samples`） | 低至中 | ✅ 已修正 |
 
 ---
 
@@ -303,11 +304,79 @@ output_final = output_mc / mc_samples
 
 ---
 
-## 七、結論
+## 七、已實施修正（2026-04-15）
 
-`denoise_GR2R.py` 正確實現了「雙重再污染自監督訓練」的核心概念，Hann 窗拼接、批次推論、Immerkær 噪聲估計均無誤。在一般 SEM 應用（中高計數、加性噪聲為主）下，程式可產出可用的去噪結果。
+修正同步施行於 `denoise_GR2R.py` 與 `denoise_GR2R_multi.py`。
 
-然而，程式名稱（`GR2R`）指向 Monroy et al. 2025，header 卻引用 Pang et al. 2021（R2R），形成文件與命名的雙重混淆。更重要的是，Gaussian 再污染採用**對稱獨立雙抽樣**，Poisson 再污染採用**獨立重採樣**，兩者均未嚴格遵循 R2R 或 GR2R 論文的數學公式。對於需要與論文數值比較或在極低計數 SEM 影像上使用的場合，應按建議 B–D 進行修正。
+### 修正 1：Header 作者署名
+
+```python
+# Before: Guo et al., CVPR 2021
+# After:
+#   [R2R]  Pang et al., CVPR 2021  (arXiv:2102.02234)
+#   [GR2R] Monroy, Bacca, Tachella, CVPR 2025  (arXiv:2412.04648)
+```
+
+### 修正 2：Gaussian 再污染 — R2R 共享 ε 對
+
+舊函式（`recorrupt_gaussian`）改寫為 `recorrupt_r2r_pair`，回傳 `(y1, y2)` 配對：
+
+```python
+def recorrupt_r2r_pair(patch, sigma_r, rng):
+    eps = rng.standard_normal(patch.shape).astype(np.float32) * sigma_r
+    y1  = np.clip(patch + eps, 0.0, 1.0)
+    y2  = np.clip(patch - eps, 0.0, 1.0)   # y2 = 2y - y1  (deterministic)
+    return y1, y2
+```
+
+`GR2RDataset.__getitem__` 同步改為 `y1, y2 = recorrupt_r2r_pair(...)` 一次呼叫。
+
+### 修正 3：Poisson 再污染 — GR2R Binomial 分裂
+
+舊函式（`recorrupt_poisson`）改寫為 `recorrupt_poisson_binomial`：
+
+```python
+def recorrupt_poisson_binomial(patch, photon_scale, binomial_alpha, rng):
+    z     = np.round(np.maximum(patch * photon_scale, 0.0)).astype(np.int64)
+    omega = rng.binomial(z, binomial_alpha).astype(np.float32)
+    y1    = np.clip((patch - omega / photon_scale) / (1.0 - binomial_alpha), 0.0, 1.0)
+    y2    = np.clip(patch / binomial_alpha
+                    - (1.0 - binomial_alpha) / binomial_alpha * y1, 0.0, 1.0)
+    return y1, y2
+```
+
+新增 CLI 參數 `--binomial_alpha`（預設 `0.15`，Monroy et al. 建議值）。
+
+### 修正 5：Monte Carlo 推論平均 — `--mc_samples`
+
+新增 `--mc_samples` 參數（預設 `1`，不改變現有行為）。當 `J > 1` 時，在 `main()` 中執行 MC 迴圈：
+
+```python
+if args.mc_samples > 1:
+    denoised_acc = np.zeros_like(image, dtype=np.float64)
+    for j in range(1, args.mc_samples + 1):
+        y1_mc, _ = recorrupt_r2r_pair(image, sigma_r, mc_rng)   # or Poisson
+        denoised_acc += predict_tiled(model, y1_mc, **tile_kw)
+    denoised = (denoised_acc / args.mc_samples).astype(np.float32)
+```
+
+`predict_tiled` 本身無需修改；MC 邏輯完全在 `main()` 層級。
+
+### 保留不修改：偏差 4（$\alpha$ 參數語義）
+
+`sigma_r = alpha × sigma_est` 的線性縮放對使用者更直覺（`alpha=1.0` = 再污染強度等於原始噪聲），優於論文的 $\sqrt{\alpha/(1-\alpha)}$ 縮放。文件中已加入說明，避免使用者與論文數值直接比較時產生混淆。
+
+---
+
+## 八、結論
+
+`denoise_GR2R.py` / `denoise_GR2R_multi.py` 修正後：
+- **Gaussian 模式**：遵循 R2R (Pang et al. 2021) 共享 ε 對，訓練目標方差較低
+- **Poisson 模式**：遵循 GR2R (Monroy et al. 2025) Binomial 分裂，對低計數 SEM 影像理論保證完整
+- **推論品質**：`--mc_samples 5`（約 0.3–0.8 dB 提升，執行時間 ×5）可選
+- **文件**：作者署名、論文引用、函式說明均已修正
+
+Hann 窗拼接、批次推論、Immerkær 噪聲估計等原有正確部分維持不變。
 
 ---
 

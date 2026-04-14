@@ -1,16 +1,20 @@
 # ============================================================
-# SEM Image Denoising — GR2R, Multi-Image (pure PyTorch)
+# SEM Image Denoising — R2R / GR2R, Multi-Image (pure PyTorch)
 # ============================================================
 # Based on:
-#   "Recorrupted-to-Recorrupted: Unsupervised Deep Learning for Image Denoising"
-#   Guo et al., CVPR 2021  (arXiv:2102.02234)
+#   [R2R]  "Recorrupted-to-Recorrupted: Unsupervised Deep Learning for Image Denoising"
+#          Pang et al., CVPR 2021  (arXiv:2102.02234)
+#          GitHub: github.com/PangTongyao/Recorrupted-to-Recorrupted-Unsupervised-
+#                  Deep-Learning-for-Image-Denoising
+#   [GR2R] "Generalized Recorrupted-to-Recorrupted: Self-Supervised Learning
+#          Beyond Gaussian Noise"  Monroy, Bacca, Tachella, CVPR 2025
+#          (arXiv:2412.04648)  GitHub: github.com/bemc22/GeneralizedR2R
 #
 # Train ONCE on a batch of images acquired under similar conditions,
 # then denoise every image with the same model.
 #
 # Differences from denoise_GR2R.py:
-#   + MultiImageGR2RDataset: patches drawn from a pool of images, each pair
-#     independently re-corrupted (no blind-spot masking)
+#   + MultiImageGR2RDataset: patches drawn from a pool of images
 #   + Noise std auto-estimated per image; pooled mean used as shared sigma_r
 #     (override with --noise_std)
 #   + --save_model / --load_model checkpoint support
@@ -19,25 +23,27 @@
 #   + Per-image output ({stem}_denoised.tif, {stem}_comparison.png)
 #
 # Identical to denoise_GR2R.py:
-#   = estimate_noise_std, recorrupt_gaussian, recorrupt_poisson
+#   = estimate_noise_std, recorrupt_r2r_pair, recorrupt_poisson_binomial
 #   = DoubleConvBlock, N2VUNet architecture (4-level, base_features=32)
 #   = Batched tiled inference with per-axis reflection padding (Opt 4)
 #   = Hann-window blending (Opt 2)
-#   = MSE over ALL pixels (no masking needed in GR2R)
+#   = MSE over ALL pixels (no masking needed in R2R/GR2R)
 #   = Adam + CosineAnnealingLR, lr=4e-4 → 1e-6
+#   = --mc_samples Monte Carlo inference averaging
 #
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 #
 # Usage:
 #   python denoise_GR2R_multi.py --input_dir ./sem_images --output_dir ./denoised
 #   python denoise_GR2R_multi.py --input_dir ./sem_images --output_dir ./denoised \
-#                                --epochs 100 --patch_size 64 --poisson
+#                                --epochs 100 --patch_size 64 --poisson \
+#                                --binomial_alpha 0.15
 #
 #   # Train on 2 representative images, save model, denoise all 10 later:
 #   python denoise_GR2R_multi.py --input_dir ./train_imgs --output_dir ./denoised \
 #                                --save_model sem_gr2r.pt
 #   python denoise_GR2R_multi.py --input_dir ./all_imgs   --output_dir ./denoised \
-#                                --load_model sem_gr2r.pt
+#                                --load_model sem_gr2r.pt --mc_samples 5
 # ============================================================
 
 import os
@@ -177,28 +183,48 @@ def estimate_noise_std(image: np.ndarray) -> float:
     return max(sigma, 1e-4)
 
 
-def recorrupt_gaussian(
+def recorrupt_r2r_pair(
     patch: np.ndarray,
     sigma_r: float,
     rng: np.random.Generator,
-) -> np.ndarray:
-    """Add i.i.d. Gaussian noise N(0, sigma_r²) and clip to [0, 1]."""
-    noise = rng.standard_normal(patch.shape).astype(np.float32) * sigma_r
-    return np.clip(patch + noise, 0.0, 1.0)
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    R2R asymmetric training pair (Pang et al. CVPR 2021, Theorem 1).
+
+    eps ~ N(0, sigma_r² I);  y1 = y + eps,  y2 = y − eps
+    Shared ε gives a deterministic y2 = 2y − y1, lower variance than
+    two independent draws.
+    """
+    eps = rng.standard_normal(patch.shape).astype(np.float32) * sigma_r
+    y1 = np.clip(patch + eps, 0.0, 1.0)
+    y2 = np.clip(patch - eps, 0.0, 1.0)
+    return y1, y2
 
 
-def recorrupt_poisson(
+def recorrupt_poisson_binomial(
     patch: np.ndarray,
     photon_scale: float,
+    binomial_alpha: float,
     rng: np.random.Generator,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Resample each pixel from Poisson(y * photon_scale) / photon_scale.
-    Matching SEM shot-noise physics: re-corruption has same mean and signal-proportional variance.
+    GR2R Binomial splitting for Poisson noise (Monroy et al. CVPR 2025, Sec. 4.2).
+
+    omega ~ Binomial(round(y · photon_scale), binomial_alpha)
+    y1 = (y − omega / photon_scale) / (1 − binomial_alpha)
+    y2 = y / binomial_alpha − (1 − binomial_alpha) / binomial_alpha · y1
+
+    Preserves SEM shot-noise NEF structure; superior for low-count images.
+    Recommended binomial_alpha = 0.15.
     """
-    counts    = np.maximum(patch * photon_scale, 0.0)
-    resampled = rng.poisson(counts).astype(np.float32) / photon_scale
-    return np.clip(resampled, 0.0, 1.0)
+    z = np.round(np.maximum(patch * photon_scale, 0.0)).astype(np.int64)
+    omega = rng.binomial(z, binomial_alpha).astype(np.float32)
+    y1 = np.clip((patch - omega / photon_scale) / (1.0 - binomial_alpha), 0.0, 1.0)
+    y2 = np.clip(
+        patch / binomial_alpha - (1.0 - binomial_alpha) / binomial_alpha * y1,
+        0.0, 1.0,
+    )
+    return y1, y2
 
 
 # ============================================================
@@ -207,28 +233,28 @@ def recorrupt_poisson(
 
 class MultiImageGR2RDataset(Dataset):
     """
-    Self-supervised GR2R dataset over a pool of images.
+    Self-supervised R2R / GR2R dataset over a pool of images.
 
-    Each item is a (y1, y2) pair where y1 and y2 are two independently
-    re-corrupted versions of the same patch drawn from a randomly selected
-    image in the pool.
+    Gaussian mode — R2R shared-ε pair (Pang et al. 2021):
+        y1 = y + eps,  y2 = y − eps  (shared eps, lower variance than independent draws).
 
-    Key difference from MultiImageN2VDataset: NO blind-spot masking.
-    The network receives the full patch and predicts an independent re-corruption.
-    MSE is computed over ALL pixels — the full-context receptive field is exploited.
+    Poisson mode — GR2R Binomial splitting (Monroy et al. 2025):
+        Binomial split of photon count z; preserves SEM shot-noise NEF structure.
 
+    NO blind-spot masking — MSE over ALL pixels.
     Images too small for patch_size are skipped with a warning.
     """
 
     def __init__(
         self,
         images: List[np.ndarray],
-        patch_size:   int   = 64,
-        num_patches:  int   = 2000,
-        sigma_r:      float = 0.05,
-        photon_scale: float = 100.0,
-        use_poisson:  bool  = False,
-        rng_seed:     int   = None,
+        patch_size:      int   = 64,
+        num_patches:     int   = 2000,
+        sigma_r:         float = 0.05,
+        photon_scale:    float = 100.0,
+        binomial_alpha:  float = 0.15,
+        use_poisson:     bool  = False,
+        rng_seed:        int   = None,
     ):
         assert patch_size % 8 == 0, f"patch_size must be divisible by 8, got {patch_size}"
 
@@ -246,14 +272,15 @@ class MultiImageGR2RDataset(Dataset):
                 "Reduce patch_size or use larger images."
             )
 
-        self.patch_size   = patch_size
-        self.num_patches  = num_patches
-        self.sigma_r      = sigma_r
-        self.photon_scale = photon_scale
-        self.use_poisson  = use_poisson
-        self.rng          = np.random.default_rng(rng_seed)
-        self.shapes       = [(img.shape[0], img.shape[1]) for img in self.images]
-        self.n_images     = len(self.images)
+        self.patch_size      = patch_size
+        self.num_patches     = num_patches
+        self.sigma_r         = sigma_r
+        self.photon_scale    = photon_scale
+        self.binomial_alpha  = binomial_alpha
+        self.use_poisson     = use_poisson
+        self.rng             = np.random.default_rng(rng_seed)
+        self.shapes          = [(img.shape[0], img.shape[1]) for img in self.images]
+        self.n_images        = len(self.images)
 
     def __len__(self) -> int:
         return self.num_patches
@@ -268,11 +295,10 @@ class MultiImageGR2RDataset(Dataset):
         patch   = self.images[img_idx][r0:r0 + P, c0:c0 + P].copy()
 
         if self.use_poisson:
-            y1 = recorrupt_poisson(patch, self.photon_scale, self.rng)
-            y2 = recorrupt_poisson(patch, self.photon_scale, self.rng)
+            y1, y2 = recorrupt_poisson_binomial(
+                patch, self.photon_scale, self.binomial_alpha, self.rng)
         else:
-            y1 = recorrupt_gaussian(patch, self.sigma_r, self.rng)
-            y2 = recorrupt_gaussian(patch, self.sigma_r, self.rng)
+            y1, y2 = recorrupt_r2r_pair(patch, self.sigma_r, self.rng)
 
         return (
             torch.from_numpy(y1).unsqueeze(0),   # (1, P, P) — network input
@@ -287,17 +313,18 @@ class MultiImageGR2RDataset(Dataset):
 def train_gr2r_multi(
     model: nn.Module,
     images: List[np.ndarray],
-    patch_size:     int   = 64,
-    batch_size:     int   = 128,
-    num_epochs:     int   = 100,
-    learning_rate:  float = 4e-4,
-    sigma_r:        float = 0.05,
-    photon_scale:   float = 100.0,
-    use_poisson:    bool  = False,
-    val_percentage: float = 0.1,
-    device: torch.device  = None,
+    patch_size:      int   = 64,
+    batch_size:      int   = 128,
+    num_epochs:      int   = 100,
+    learning_rate:   float = 4e-4,
+    sigma_r:         float = 0.05,
+    photon_scale:    float = 100.0,
+    binomial_alpha:  float = 0.15,
+    use_poisson:     bool  = False,
+    val_percentage:  float = 0.1,
+    device: torch.device   = None,
 ) -> nn.Module:
-    """Train GR2R jointly on multiple images (one training run for all)."""
+    """Train R2R/GR2R jointly on multiple images (one training run for all)."""
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -311,6 +338,7 @@ def train_gr2r_multi(
         patch_size=patch_size,
         sigma_r=sigma_r,
         photon_scale=photon_scale,
+        binomial_alpha=binomial_alpha,
         use_poisson=use_poisson,
     )
     train_ds = MultiImageGR2RDataset(images, num_patches=n_train, rng_seed=42, **common_kw)
@@ -518,12 +546,19 @@ def main():
     parser.add_argument('--noise_std',    type=float, default=0.0,
                         help='Manual noise std override (0 = auto-estimate per image and average). '
                              'Set this if the noise level is known precisely.')
-    parser.add_argument('--poisson',      action='store_true',
-                        help='Use Poisson re-corruption instead of Gaussian. '
+    parser.add_argument('--poisson',         action='store_true',
+                        help='Use GR2R Binomial-splitting re-corruption instead of Gaussian. '
                              'Recommended when SEM noise is dominated by shot noise.')
-    parser.add_argument('--photon_scale', type=float, default=100.0,
+    parser.add_argument('--photon_scale',    type=float, default=100.0,
                         help='Photon scale for Poisson re-corruption (used only with --poisson). '
-                             'Higher values → less variance per re-corruption.')
+                             'Higher values → finer photon-count resolution.')
+    parser.add_argument('--binomial_alpha',  type=float, default=0.15,
+                        help='Binomial success probability for GR2R Poisson splitting '
+                             '(used only with --poisson). Recommended 0.15 (Monroy et al.).')
+    parser.add_argument('--mc_samples',      type=int,   default=1,
+                        help='Monte Carlo inference samples (GR2R §5.3). '
+                             'J > 1 averages J independent re-corrupted predictions; '
+                             'reduces output variance. Recommended J=5–15. Default 1.')
     parser.add_argument('--save_model',   type=str, default='',
                         help='Path to save trained model weights (.pt)')
     parser.add_argument('--load_model',   type=str, default='',
@@ -577,9 +612,10 @@ def main():
     print(f"Re-corruption std:     σ_r = α × σ = {args.alpha:.2f} × {sigma_shared:.5f} = {sigma_r:.5f}")
 
     if args.poisson:
-        print(f"Re-corruption mode: Poisson (photon_scale={args.photon_scale:.0f})")
+        print(f"Re-corruption mode: Poisson Binomial "
+              f"(photon_scale={args.photon_scale:.0f}, α_b={args.binomial_alpha:.2f})")
     else:
-        print(f"Re-corruption mode: Gaussian")
+        print(f"Re-corruption mode: Gaussian (R2R shared-ε pair)")
 
     # ── 4. Build model ────────────────────────────────────────────────────────
     model = N2VUNet(in_channels=1, base_features=32)
@@ -597,6 +633,7 @@ def main():
             num_epochs=args.epochs,
             sigma_r=sigma_r,
             photon_scale=args.photon_scale,
+            binomial_alpha=args.binomial_alpha,
             use_poisson=args.poisson,
             device=device,
         )
@@ -625,21 +662,36 @@ def main():
     tile_size    = (args.tile_size, args.tile_size)
     tile_overlap = (args.tile_overlap, args.tile_overlap)
 
-    print(f"\nRunning inference on {len(infer_paths)} image(s)...")
+    tile_kw = dict(
+        tile_size=tile_size,
+        tile_overlap=tile_overlap,
+        device=device,
+    )
+    mc_rng = np.random.default_rng(0) if args.mc_samples > 1 else None
+
+    mc_suffix = f" (MC J={args.mc_samples})" if args.mc_samples > 1 else ""
+    print(f"\nRunning inference on {len(infer_paths)} image(s){mc_suffix}...")
     for i, (p, img, (img_min, img_max)) in enumerate(
             zip(infer_paths, infer_images, infer_meta)):
         print(f"\n[{i+1}/{len(infer_paths)}] {p.name}")
-        denoised = predict_tiled(
-            model, img,
-            tile_size=tile_size,
-            tile_overlap=tile_overlap,
-            device=device,
-        )
+        if args.mc_samples > 1:
+            denoised_acc = np.zeros_like(img, dtype=np.float64)
+            for j in range(1, args.mc_samples + 1):
+                if args.poisson:
+                    y1_mc, _ = recorrupt_poisson_binomial(
+                        img, args.photon_scale, args.binomial_alpha, mc_rng)
+                else:
+                    y1_mc, _ = recorrupt_r2r_pair(img, sigma_r, mc_rng)
+                print(f"  MC sample {j}/{args.mc_samples}")
+                denoised_acc += predict_tiled(model, y1_mc, **tile_kw).astype(np.float64)
+            denoised = (denoised_acc / args.mc_samples).astype(np.float32)
+        else:
+            denoised = predict_tiled(model, img, **tile_kw)
         tif_path = str(out_dir / f"{p.stem}_denoised.tif")
         png_path = str(out_dir / f"{p.stem}_comparison.png")
         save_outputs(img, denoised, img_min, img_max, tif_path, png_path)
 
-    print(f"\nDone. All results saved to '{out_dir}/'")
+    print(f"\nDone. All results saved to '{out_dir}'")
 
 
 if __name__ == '__main__':
