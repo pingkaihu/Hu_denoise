@@ -168,8 +168,8 @@ class N2VDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         P = self.patch_size
 
-        r0 = self.rng.integers(0, self.H - P + 1)
-        c0 = self.rng.integers(0, self.W - P + 1)
+        r0 = self.rng.integers(0, self.H - P)
+        c0 = self.rng.integers(0, self.W - P)
         patch = self.image[r0:r0 + P, c0:c0 + P].copy()
 
         corrupted, mask = self._apply_n2v_masking(patch)
@@ -204,18 +204,15 @@ class N2VDataset(Dataset):
         dr = self.rng.integers(-rad, rad + 1, size=self.n_masked)
         dc = self.rng.integers(-rad, rad + 1, size=self.n_masked)
 
-        # Guard: fix any (dr, dc) == (0, 0) to avoid self-replacement.
-        # Re-sample from the full neighbourhood; deterministic fallback to (1, 0)
-        # for the rare double-zero (probability ≈ 1/121² — negligible).
+        # Guard: fix any (dr, dc) == (0, 0) to avoid self-replacement
         zero_mask = (dr == 0) & (dc == 0)
         if np.any(zero_mask):
-            n_fix  = int(np.sum(zero_mask))
-            dr_fix = self.rng.integers(-rad, rad + 1, size=n_fix)
-            dc_fix = self.rng.integers(-rad, rad + 1, size=n_fix)
-            still_zero = (dr_fix == 0) & (dc_fix == 0)
-            dr_fix[still_zero] = 1
-            dr[zero_mask] = dr_fix
-            dc[zero_mask] = dc_fix
+            n_fix = int(np.sum(zero_mask))
+            # Randomly choose per-collision whether to shift dr or dc
+            shift_dr = self.rng.integers(0, 2, size=n_fix).astype(bool)
+            sign     = self.rng.choice([-1, 1], size=n_fix)
+            dr[zero_mask] = np.where(shift_dr,  sign, 0)
+            dc[zero_mask] = np.where(~shift_dr, sign, 0)
 
         nr = np.clip(rows + dr, 0, P - 1)
         nc = np.clip(cols + dc, 0, P - 1)
@@ -260,7 +257,7 @@ def train_n2v(
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
-    loss_fn   = nn.L1Loss(reduction='sum')
+    loss_fn   = nn.MSELoss(reduction='sum')
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Device: {device}  |  Model parameters: {n_params:,}")

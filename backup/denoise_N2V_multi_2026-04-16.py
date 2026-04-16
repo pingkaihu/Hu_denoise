@@ -201,8 +201,8 @@ class MultiImageN2VDataset(Dataset):
 
         img_idx = int(self.rng.integers(0, self.n_images))
         H, W    = self.shapes[img_idx]
-        r0      = int(self.rng.integers(0, H - P + 1))
-        c0      = int(self.rng.integers(0, W - P + 1))
+        r0      = int(self.rng.integers(0, H - P))
+        c0      = int(self.rng.integers(0, W - P))
         patch   = self.images[img_idx][r0:r0 + P, c0:c0 + P].copy()
 
         corrupted, mask = self._apply_n2v_masking(patch)
@@ -230,13 +230,11 @@ class MultiImageN2VDataset(Dataset):
 
         zero_mask = (dr == 0) & (dc == 0)
         if np.any(zero_mask):
-            n_fix  = int(np.sum(zero_mask))
-            dr_fix = self.rng.integers(-rad, rad + 1, size=n_fix)
-            dc_fix = self.rng.integers(-rad, rad + 1, size=n_fix)
-            still_zero = (dr_fix == 0) & (dc_fix == 0)
-            dr_fix[still_zero] = 1
-            dr[zero_mask] = dr_fix
-            dc[zero_mask] = dc_fix
+            n_fix    = int(np.sum(zero_mask))
+            shift_dr = self.rng.integers(0, 2, size=n_fix).astype(bool)
+            sign     = self.rng.choice([-1, 1], size=n_fix)
+            dr[zero_mask] = np.where(shift_dr,  sign, 0)
+            dc[zero_mask] = np.where(~shift_dr, sign, 0)
 
         nr = np.clip(rows + dr, 0, P - 1)
         nc = np.clip(cols + dc, 0, P - 1)
@@ -285,7 +283,7 @@ def train_n2v_multi(
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
-    loss_fn   = nn.L1Loss(reduction='sum')
+    loss_fn   = nn.MSELoss(reduction='sum')
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"\nDevice: {device}  |  Model parameters: {n_params:,}")

@@ -89,6 +89,8 @@ If inference hits OOM: reduce `tile_size` from `[256,256]` → `[128,128]` → `
 - **Multiple images, same conditions** → `denoise_N2V_multi.py`
 - **Single image, Poisson/Gaussian additive noise (full receptive field)** → `denoise_GR2R.py`
 - **Multiple images, unknown additive / Poisson shot noise** → `denoise_GR2R_multi.py`
+- **Mixed noise, spatially correlated grain 2–4px** → `denoise_apbsn_lee.py` (`--pd_stride 2`; reusable model)
+- **Same as above, multiple images** → `denoise_apbsn_lee_multi.py`
 - **Real-world complex noise** → `denoise_apbsn.py`
 - **Real-world complex noise, paper-faithful DBSNl + R3** → `denoise_apbsn_faithful.py`
 - **Same as above, multiple images** → `denoise_apbsn_faithful_multi.py`

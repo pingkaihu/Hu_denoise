@@ -181,7 +181,9 @@ def mixed_noise_loss(output, target, L=5.0, alpha=0.5):
     poisson_nll = output - target * torch.log(output)
 
     # Gamma 負對數似然（speckle）
-    gamma_nll = (L - 1) * torch.log(output) + L * target / output
+    # 推導：y = x·n，n ~ Gamma(L,L)，p(y|x) = p_n(y/x)/x
+    # -log p(y|x) ∝ L·log(x) + L·y/x（含 Jacobian log(x) 項）
+    gamma_nll = L * torch.log(output) + L * target / output
 
     return (alpha * poisson_nll + (1 - alpha) * gamma_nll).mean()
 ```
@@ -323,7 +325,8 @@ tifffile.imwrite("denoised_pn2v_raw.tif", denoised.astype(np.float32))
 ```
 
 **何時改用其他策略：**
-- Speckle grain > 2px（高倍率）→ 改用 GR2R 或 Self2Self
+- Speckle grain 2–4px（高倍率）→ 改用 AP-BSN（`denoise_apbsn_lee.py --pd_stride 2`，批量可重用）
+- Speckle grain > 4px（極高倍率）→ 改用 Self2Self 或 GR2R
 - 需要批次遷移到 > 10 張不同條件影像 → 先做直方圖匹配再套用
 
 ---
@@ -453,18 +456,22 @@ Step 0：診斷計數等級
 
 Step 1：估計 speckle grain size
   └─ grain_px = estimate_speckle_grain_size(image)
-       ├─ grain_px ≤ 2 → N2V 系列或 PN2V 都可用
-       └─ grain_px > 2 → 需要 GR2R 或 Self2Self
+       ├─ grain_px ≤ 2  → N2V 系列或 PN2V 都可用
+       ├─ grain_px 2–4  → AP-BSN（pd_stride=2，已實作）
+       └─ grain_px > 4  → GR2R 或 Self2Self
 
 Step 2：依資源與參數估計能力選擇
   │
   ├─ 優先首選：PN2V 原始空間（策略一）
   │    └─► 適用大多數場景，無需估計任何參數，直接建模混合噪聲
   │
-  ├─ grain > 2px 且能估計 ENL？
-  │    └─► GR2R（理論最直接，Gamma 分佈原生支援）
+  ├─ grain 2–4px（中等空間相關）？
+  │    └─► AP-BSN（denoise_apbsn_lee.py，pd_stride=2；批量可重用）
   │
-  ├─ 不想估計任何參數 + grain > 2px？
+  ├─ grain > 4px 且能估計 ENL？
+  │    └─► GR2R（Binomial splitting；注意：對純 Poisson 成分最嚴謹）
+  │
+  ├─ grain > 4px，不想估計任何參數？
   │    └─► Self2Self（零假設，但訓練時間 30–90 分鐘，無法批量）
   │
   ├─ Shot noise 遠大於 Speckle（Var/Mean ≈ 1，grain 小）？
@@ -725,8 +732,11 @@ Step 2：診斷噪聲類型（diagnose_noise_type）
        ├─ 首選：PN2V 原始空間（策略一）
        │    └─► 適用大多數場景，無需任何參數估計
        │
-       ├─ grain > 2px（高倍率 SEM）？
-       │    ├─ 能估計 ENL → GR2R
+       ├─ grain 2–4px（高倍率 SEM）？
+       │    └─► AP-BSN（denoise_apbsn_lee.py，pd_stride=2；批量可重用）
+       │
+       ├─ grain > 4px（極高倍率 SEM）？
+       │    ├─ 能估計 ENL → GR2R（注意：對純 Poisson 成分理論嚴謹）
        │    └─ 不想估計  → Self2Self（30–90 分鐘/張）
        │
        ├─ 需要批量處理（> 5 張）且條件穩定？
@@ -749,8 +759,9 @@ Step 2：診斷噪聲類型（diagnose_noise_type）
 | 方法 | 優先順序 | 處理混合噪聲 | 理論嚴謹性 | 早停問題 | 空間相關噪聲 |
 |---|---|---|---|---|---|
 | **PN2V 原始空間** | ⭐ **首選** | ✅ 直接建模 Poisson-Gamma | ✅ 最直接 | 不需要 | blind-spot 原始大小 |
-| **GR2R** | ⭐⭐ | ✅ Gamma 原生支援 | ✅ 最嚴謹（Gamma）| 不需要 | 不依賴 blind-spot |
-| **Self2Self** | ⭐⭐⭐ | ✅ 無假設 | ✅ 通用 | 不需要 | 隱式（grain ≤ 2px）|
+| **AP-BSN** | ⭐⭐（grain 2–4px）| ✅ 無噪聲假設 | ✅ PD 消除空間相關性 | 不需要 | pd_stride 對應 grain |
+| **GR2R** | ⭐⭐⭐（純 shot noise）| ⚠️ 對混合噪聲理論支撐有限（⚠️ 見注4）| ✅ 對純 Poisson 嚴謹 | 不需要 | 不依賴 blind-spot |
+| **Self2Self** | ⭐⭐⭐⭐ | ✅ 無假設 | ✅ 通用 | 不需要 | 隱式（grain ≤ 4px）|
 | GAT + N2V | ⭐⭐⭐⭐（快速）| ✅ 近似 | ⚠️ 低計數失效 | 不需要 | blind-spot 原始大小 |
 | GAT + PN2V | ⭐⭐⭐⭐⭐（特定場景）| ⚠️ 數學自相矛盾（⚠️ 見注1）| ⚠️ 有條件 | 不需要 | 擴大 blind-spot（⚠️ 見注2）|
 | DIP（修改損失）| — | ✅ 修改後 | ⚠️ 中等 | **核心問題** | 架構先驗 |
@@ -765,6 +776,7 @@ Step 2：診斷噪聲類型（diagnose_noise_type）
 | GAT + BM3D | 不需要 | 10–60 秒 | — | 不需要 |
 | N2V | 5–15 分鐘 | 1–3 秒 | ✅ 高 | 2–4 GB |
 | **PN2V 原始空間** | 15–40 分鐘 | 5–15 秒 | ✅ 高（⚠️ 見注3）| 3–6 GB |
+| **AP-BSN** | 10–30 分鐘 | 5–15 秒 | ✅ 高（⚠️ 見注3）| 2–4 GB |
 | GAT + PN2V | 15–40 分鐘 | 5–15 秒 | ✅ 高（⚠️ 見注3）| 3–6 GB |
 | DIP | 5–20 分鐘 | 1–3 秒 | ❌ 低 | 2–4 GB |
 | **Self2Self** | 30–90 分鐘 | 20–60 秒 | ❌ 低 | 4–6 GB |
@@ -773,7 +785,7 @@ Step 2：診斷噪聲類型（diagnose_noise_type）
 
 > 面對 SEM 的 speckle + shot noise 混合情境，**PN2V 原始空間（不做 GAT）** 是首選：GMM 直接對 Poisson-Gamma 混合的噪聲分佈建模，無前處理轉換的數學冗餘問題，在正常與極低計數場景下都比 GAT 組合更穩健。
 >
-> 若 speckle grain > 2px（高倍率 SEM），改用 **GR2R**（能估計 ENL）或 **Self2Self**（零參數）。
+> 若 speckle grain 2–4px（高倍率 SEM），優先用 **AP-BSN**（`denoise_apbsn_lee.py --pd_stride 2`，批量可重用）。grain > 4px 改用 **Self2Self**（零參數）或 **GR2R**（能估計 ENL；注意僅對純 Poisson 成分理論嚴謹，見注4）。
 >
 > GAT + PN2V 退為「Shot noise 遠大於 Speckle + 訊號強度正常」的特定場景備選，不再作為通用首選。
 >
@@ -784,6 +796,8 @@ Step 2：診斷噪聲類型（diagnose_noise_type）
 **注2 — 擴大 blind-spot 的解析度代價**：擴大至 3×3 或 5×5 可覆蓋 speckle grain，但代價是抹平同等尺度的真實高頻結構。最小關鍵特徵 < 4px 時，改用 AP-BSN 或 N2V2，而非擴大盲區。
 
 **注3 — 批次遷移風險**：「可重用性高」的前提是後續影像的噪聲統計與訓練影像一致。SEM 帶電效應、束流漂移可能使背景亮度偏移 > 10%，此時需先做直方圖匹配，或分批重新訓練。
+
+**注4 — GR2R 在混合噪聲的理論侷限**：GR2R 的 Binomial splitting 對一個 Poisson 樣本可分裂為兩個獨立 Poisson pair，在純 shot noise 場景理論嚴謹。但混合噪聲 `y = Poisson(x·n_speckle)` 中，同一次曝光的 `n_speckle` 對兩份分裂結果是同一個實現（相關），不再構成有效 N2N pair。GR2R 仍有實用效果，但「對 Gamma 噪聲最直接」的定性描述有誇大之嫌，實際表現依 speckle 強度而定。
 
 ---
 

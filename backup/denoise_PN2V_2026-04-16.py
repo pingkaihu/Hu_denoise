@@ -297,8 +297,8 @@ class N2VDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         P  = self.patch_size
-        r0 = self.rng.integers(0, self.H - P + 1)
-        c0 = self.rng.integers(0, self.W - P + 1)
+        r0 = self.rng.integers(0, self.H - P)
+        c0 = self.rng.integers(0, self.W - P)
         patch     = self.image[r0:r0 + P, c0:c0 + P].copy()
         corrupted, mask = self._apply_n2v_masking(patch)
         return (
@@ -322,13 +322,11 @@ class N2VDataset(Dataset):
 
         zero_mask = (dr == 0) & (dc == 0)
         if np.any(zero_mask):
-            n_fix  = int(np.sum(zero_mask))
-            dr_fix = self.rng.integers(-rad, rad + 1, size=n_fix)
-            dc_fix = self.rng.integers(-rad, rad + 1, size=n_fix)
-            still_zero = (dr_fix == 0) & (dc_fix == 0)
-            dr_fix[still_zero] = 1
-            dr[zero_mask] = dr_fix
-            dc[zero_mask] = dc_fix
+            n_fix    = int(np.sum(zero_mask))
+            shift_dr = self.rng.integers(0, 2, size=n_fix).astype(bool)
+            sign     = self.rng.choice([-1, 1], size=n_fix)
+            dr[zero_mask] = np.where(shift_dr,  sign, 0)
+            dc[zero_mask] = np.where(~shift_dr, sign, 0)
 
         nr = np.clip(rows + dr, 0, P - 1)
         nc = np.clip(cols + dc, 0, P - 1)
@@ -537,7 +535,7 @@ def train_pn2v(
 
 
 # ============================================================
-# 7. Tiled Inference  (PN2V: adds MMSE posterior mean correction)
+# 7. Tiled Inference  (identical to denoise_N2V.py)
 # ============================================================
 
 def _compute_padding(image_size: int, tile_size: int) -> int:
@@ -549,77 +547,15 @@ def _compute_padding(image_size: int, tile_size: int) -> int:
     return pad
 
 
-@torch.no_grad()
-def _apply_mmse_tile(
-    s_pred:            np.ndarray,
-    y_obs:             np.ndarray,
-    noise_model:       'GMMNoiseModel',
-    n_hypotheses:      int   = 50,
-    search_half_width: float = 0.15,
-    device:            torch.device = None,
-) -> np.ndarray:
-    """
-    MMSE posterior mean correction for one predicted tile.
-
-    Implements Equation (4) of Krull et al. (PN2V, 2020) on a discrete grid:
-
-        ŝᵢ = Σₖ p(yᵢ | sₖ) · sₖ  /  Σₖ p(yᵢ | sₖ)
-
-    where sₖ are n_hypotheses values uniformly spaced in
-    [s_pred_i − search_half_width, s_pred_i + search_half_width], clamped to [0, 1].
-
-    Args:
-        s_pred            : (H, W) float32 — UNet signal estimate for this tile.
-        y_obs             : (H, W) float32 — original noisy pixels for this tile.
-        noise_model       : trained GMMNoiseModel.
-        n_hypotheses      : grid size per pixel (default 50; increase for higher accuracy).
-        search_half_width : half-range of the hypothesis grid (default 0.15 ≈ ±3σ for
-                            typical SEM noise in [0, 1] normalised space).
-    """
-    if device is None:
-        device = next(noise_model.parameters()).device
-
-    H, W = s_pred.shape
-    N    = H * W
-
-    s0 = torch.from_numpy(s_pred.flatten()).float().to(device)   # (N,)
-    y  = torch.from_numpy(y_obs.flatten()).float().to(device)    # (N,)
-
-    # Hypothesis grid: (N, K), clamped to valid signal range
-    deltas = torch.linspace(-search_half_width, search_half_width,
-                             n_hypotheses, device=device)              # (K,)
-    s_grid = torch.clamp(s0.unsqueeze(1) + deltas.unsqueeze(0),
-                         0.0, 1.0)                                     # (N, K)
-    y_exp  = y.unsqueeze(1).expand_as(s_grid)                         # (N, K)
-
-    # Evaluate log p(y | s) for all N*K pairs in one vectorised call
-    log_w  = noise_model.log_prob(
-        y_exp.reshape(-1),
-        s_grid.reshape(-1),
-    ).reshape(N, n_hypotheses)                                         # (N, K)
-
-    weights = torch.softmax(log_w, dim=1)                              # (N, K)
-    s_mmse  = (weights * s_grid).sum(dim=1)                            # (N,)
-
-    return s_mmse.cpu().numpy().reshape(H, W).astype(np.float32)
-
-
 def predict_tiled(
-    model:             nn.Module,
-    image:             np.ndarray,
-    noise_model:       'GMMNoiseModel' = None,
-    tile_size:         Tuple[int, int] = (256, 256),
-    tile_overlap:      Tuple[int, int] = (48, 48),
-    infer_batch_size:  int             = 8,
-    device:            torch.device    = None,
+    model:           nn.Module,
+    image:           np.ndarray,
+    tile_size:       Tuple[int, int] = (256, 256),
+    tile_overlap:    Tuple[int, int] = (48, 48),
+    infer_batch_size: int            = 8,
+    device:          torch.device    = None,
 ) -> np.ndarray:
-    """
-    Batched tiled inference with Hann-window blending and reflection padding.
-
-    If noise_model is provided, each tile's UNet output is refined with
-    _apply_mmse_tile — the MMSE posterior mean from Krull et al. (PN2V, 2020).
-    Pass noise_model=None to skip MMSE and return the raw UNet prediction.
-    """
+    """Batched tiled inference with Hann-window blending and reflection padding."""
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -659,16 +595,6 @@ def predict_tiled(
             tiles   = [padded[r:r + th, c:c + tw] for r, c in batch_coords]
             batch_t = torch.from_numpy(np.stack(tiles)).unsqueeze(1).to(device)
             preds   = model(batch_t).squeeze(1).cpu().numpy()
-
-            if noise_model is not None:
-                for j, (r, c) in enumerate(batch_coords):
-                    preds[j] = _apply_mmse_tile(
-                        preds[j],
-                        padded[r:r + th, c:c + tw],
-                        noise_model,
-                        device=device,
-                    )
-
             for j, (r, c) in enumerate(batch_coords):
                 output_sum[r:r + th, c:c + tw] += preds[j].astype(np.float64) * hann_2d
                 weight_sum[r:r + th, c:c + tw] += hann_2d
@@ -733,9 +659,6 @@ def main() -> None:
     parser.add_argument('--infer_batch',        type=int, default=8)
     parser.add_argument('--device',             type=str, default=None,
                         help='Device override: cuda, cpu, cuda:1 … (default: auto)')
-    parser.add_argument('--no_mmse',            action='store_true',
-                        help='Skip MMSE posterior mean correction at inference '
-                             '(faster but less accurate; equivalent to plain N2V inference)')
     args = parser.parse_args()
 
     input_path          = args.input
@@ -781,12 +704,9 @@ def main() -> None:
     )
 
     # --- Inference ---
-    _nm = None if args.no_mmse else noise_model
-    print("\nRunning tiled inference"
-          + (" (MMSE posterior mean)..." if _nm is not None else " (no MMSE)..."))
+    print("\nRunning tiled inference...")
     denoised = predict_tiled(
         model, image,
-        noise_model=_nm,
         tile_size=tile_size,
         tile_overlap=tile_overlap,
         infer_batch_size=infer_batch_size,
