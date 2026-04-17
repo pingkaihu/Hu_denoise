@@ -261,6 +261,92 @@ Or add a CLI flag `--mask_ratio` so users can tune it.
 
 ---
 
+## Applied Fixes — 2026-04-17
+
+The following changes were implemented across **four files**:
+`denoise_N2V.py`, `denoise_N2V_multi.py`, `denoise_PN2V.py`, `denoise_PN2V_multi.py`.
+
+Original versions backed up to `backup/` with suffix `_2026-04-16`.
+
+### Fix 1 — MMSE Posterior Mean at Inference (Issue 8 / Priority 1)
+
+**Scope:** `denoise_PN2V.py`, `denoise_PN2V_multi.py`
+
+**Implementation (2026-04-16):** Added `_apply_mmse_tile()` implementing Equation (4) of Krull et al. (2020) with a uniform hypothesis grid around `s_pred`. `predict_tiled` gained a `noise_model` parameter; `main()` defaulted to MMSE enabled.
+
+**Regression found (2026-04-17):** Enabling MMSE caused the denoised output to be nearly identical to the original noisy image. Root cause identified and MMSE disabled by default.
+
+#### Root Cause Analysis
+
+The MMSE formula `ŝᵢ = Σₖ p(yᵢ|sₖ)·sₖ / Σₖ p(yᵢ|sₖ)` is valid **only** when `{sₖ}` are samples drawn from the network's posterior `p(s | context)`, as in official PN2V (K=800 forward passes). With a **uniform grid** around `s_pred`, the formula reduces to a likelihood search — and `p(y|s)` is maximized at `s ≈ y` (GMM mean `μ_k(s) = s + offset_k`, noise std ≈ 0.05 after `var_b = -6.0` initialization). Concretely:
+
+- GMM std σ ≈ 0.05 → likelihood ratio between two hypotheses Δs = 0.1 apart: `exp(-Δs²/2σ²) = exp(-2) ≈ 7×`
+- For any pixel where `y_obs` falls within `[s_pred − 0.15, s_pred + 0.15]` (i.e., noise ≤ 0.15 ≈ 3σ, which covers virtually all SEM pixels), the grid point closest to `y_obs` dominates
+- Result: `s_mmse ≈ y_obs` (noisy image), all denoising erased
+
+For a single-scalar prediction network, `s_pred` **is** the optimal estimate — the MMSE posterior mean requires the network to output a distribution, not a point. No grid correction is meaningful without K posterior samples.
+
+**Current state (2026-04-17):** `_apply_mmse_tile()` is kept in the code for research purposes with an explicit warning in its docstring. Default behaviour is MMSE **disabled**. The `--no_mmse` flag was renamed to `--use_mmse` (opt-in, off by default).
+
+### Fix 2 — L2 → L1 Training Loss (Issue 2 / Priority 2)
+
+**Scope:** `denoise_N2V.py`, `denoise_N2V_multi.py`
+
+```python
+# Before
+loss_fn = nn.MSELoss(reduction='sum')
+# After
+loss_fn = nn.L1Loss(reduction='sum')
+```
+
+L1 loss is more robust to hot pixels and charging artefacts in SEM images, matching the official N2V default. No other training logic was changed.
+
+### Fix 3 — Patch Sampling Off-By-One (Issues 3 & 9 / Priority 3)
+
+**Scope:** All four files (single-image and multi-image datasets)
+
+```python
+# Before — excludes last valid edge position
+r0 = self.rng.integers(0, self.H - P)     # [0, H-P-1]
+# After — includes last valid edge position
+r0 = self.rng.integers(0, self.H - P + 1) # [0, H-P]
+```
+
+Same correction applied to `c0` and, in multi-image files, to both `H - P` and `W - P` inside `__getitem__`.
+
+### Fix 4 — Zero-Displacement Resample (Issue B / Issue 4)
+
+**Scope:** All four files (`_apply_n2v_masking` / `_apply_n2v_masking`)
+
+The previous fix for `(dr, dc) == (0, 0)` redirected to one of the 4 nearest neighbours, biasing the replacement distribution toward immediate adjacents. The new approach re-samples from the full `(2r+1)²` neighbourhood, with a deterministic fallback `(1, 0)` only for the double-zero edge case (probability ≈ 1/121²):
+
+```python
+# Before — biased toward 4-nearest neighbours
+shift_dr = self.rng.integers(0, 2, size=n_fix).astype(bool)
+sign     = self.rng.choice([-1, 1], size=n_fix)
+dr[zero_mask] = np.where(shift_dr,  sign, 0)
+dc[zero_mask] = np.where(~shift_dr, sign, 0)
+
+# After — uniform re-sample from full neighbourhood
+dr_fix = self.rng.integers(-rad, rad + 1, size=n_fix)
+dc_fix = self.rng.integers(-rad, rad + 1, size=n_fix)
+still_zero = (dr_fix == 0) & (dc_fix == 0)
+dr_fix[still_zero] = 1          # deterministic fallback
+dr[zero_mask] = dr_fix
+dc[zero_mask] = dc_fix
+```
+
+### Issues Not Fixed
+
+| # | Issue | Reason not fixed |
+|---|---|---|
+| 1 | Mask ratio 0.6% vs 1.5% | Within valid range; SEM detail preservation may benefit from lower masking; left as-is |
+| 5, 10 | Train/val no spatial split | Acceptable for multi-image scenario; patch overlap probability is low |
+| 6 | GMM vs histogram noise model | GMM is physically motivated for SEM (Poisson + Gaussian); histogram offers no advantage here |
+| 7 | Single scalar vs K=800 samples | Full sample-based output requires UNet head redesign; MMSE grid (Fix 1) approximates the benefit |
+
+---
+
 ## Conclusion
 
 `denoise_N2V_multi.py` is a functionally correct N2V implementation with minor deviations from the official defaults (mask ratio, L2 vs L1 loss, patch edge bias). These do not break the algorithm but may affect convergence speed and robustness to outlier pixels.

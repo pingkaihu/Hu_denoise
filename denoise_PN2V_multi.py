@@ -582,20 +582,29 @@ def _apply_mmse_tile(
     """
     MMSE posterior mean correction for one predicted tile.
 
-    Implements Equation (4) of Krull et al. (PN2V, 2020) on a discrete grid:
+    Implements the weighted-average form of Krull et al. (PN2V, 2020):
 
         ŝᵢ = Σₖ p(yᵢ | sₖ) · sₖ  /  Σₖ p(yᵢ | sₖ)
 
-    where sₖ are n_hypotheses values uniformly spaced in
-    [s_pred_i − search_half_width, s_pred_i + search_half_width], clamped to [0, 1].
+    *** IMPORTANT LIMITATION — READ BEFORE ENABLING ***
+    This formula is only valid when {sₖ} are SAMPLES from the network's
+    posterior p(s | context), as in the official PN2V (K=800 forward passes).
+    When {sₖ} is a uniform grid (as here), the likelihood p(y|s) — which
+    peaks at s ≈ y — simply selects the grid point closest to y_obs.
+    For GMM noise std ≈ 0.05 (typical SEM), this causes s_mmse ≈ y_obs,
+    effectively returning the noisy image instead of the denoised estimate.
+
+    This function is kept for research/experimentation only.
+    For a single-scalar prediction network, s_pred already is the optimal
+    estimate; no MMSE correction is meaningful without K posterior samples.
+    Use --use_mmse only if you understand this constraint.
 
     Args:
         s_pred            : (H, W) float32 — UNet signal estimate for this tile.
         y_obs             : (H, W) float32 — original noisy pixels for this tile.
         noise_model       : trained GMMNoiseModel (shared across all images).
-        n_hypotheses      : grid size per pixel (default 50; increase for higher accuracy).
-        search_half_width : half-range of the hypothesis grid (default 0.15 ≈ ±3σ for
-                            typical SEM noise in [0, 1] normalised space).
+        n_hypotheses      : grid size per pixel (default 50).
+        search_half_width : half-range of the hypothesis grid (default 0.15).
     """
     if device is None:
         device = next(noise_model.parameters()).device
@@ -764,9 +773,11 @@ def main():
                              'The checkpoint must have been saved by this script (dict format).')
     parser.add_argument('--device',      type=str, default=None,
                         help='Device override: cuda, cpu, cuda:1 … (default: auto)')
-    parser.add_argument('--no_mmse',     action='store_true',
-                        help='Skip MMSE posterior mean correction at inference '
-                             '(faster but less accurate; equivalent to plain N2V inference)')
+    parser.add_argument('--use_mmse',    action='store_true',
+                        help='Enable experimental MMSE grid correction at inference. '
+                             'WARNING: for a single-scalar network this returns results '
+                             'close to the noisy input — only enable if you have added '
+                             'K-sample network output. Default: off.')
     args = parser.parse_args()
 
     device = torch.device(args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
@@ -871,9 +882,9 @@ def main():
     tile_size    = (args.tile_size, args.tile_size)
     tile_overlap = (args.tile_overlap, args.tile_overlap)
 
-    _nm = None if args.no_mmse else noise_model
+    _nm = noise_model if args.use_mmse else None
     print(f"\nRunning inference on {len(infer_paths)} image(s)"
-          + (" (MMSE posterior mean)..." if _nm is not None else " (no MMSE)..."))
+          + (" (MMSE grid — experimental)..." if _nm is not None else "..."))
     for i, (p, img, (img_min, img_max)) in enumerate(
             zip(infer_paths, infer_images, infer_meta)):
         print(f"\n[{i+1}/{len(infer_paths)}] {p.name}")
