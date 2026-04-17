@@ -19,11 +19,13 @@ pip install torch tifffile matplotlib numpy
 |---|---|---|
 | `denoise_N2V.py` | Standard single-image N2V, baseline PyTorch | `data/denoised_sem_N2V.tif` |
 | `denoise_N2V_test.py` | **Recommended for uniform noise** — optimized version (vectorized masking, batched inference, physical train/val split, edge padding) | `data/denoised_sem_test.tif` |
-| `denoise_PN2V.py` | **Recommended for mixed noise** — PN2V pure PyTorch; GMM models raw Poisson-Gamma directly; no GAT pre-processing; includes low-count diagnostic | `data/denoised_sem_PN2V.tif` |
+| `denoise_PN2V.py` | **Recommended for mixed noise** — PN2V pure PyTorch; GMM models raw Poisson-Gamma directly; no GAT pre-processing; includes low-count diagnostic. Note: uses parametric GMM (official uses non-parametric histogram); single scalar output (official uses K=800 samples) | `data/denoised_sem_PN2V.tif` |
+| `denoise_PN2V_bic.py` | **Mixed noise, auto GMM capacity** — same as PN2V but runs BIC (Schwarz 1978) over K ∈ {2,3,5,7} before training; recommended when ENL < 3 (strong speckle); requires `scikit-learn` | `data/denoised_sem_PN2V_bic.tif` |
 | `denoise_log_N2V.py` | Speckle / multiplicative noise — applies log transform before training | `data/denoised_sem_log_torch.tif` |
 | `denoise_N2V_multi.py` | Multiple images under similar conditions — one shared N2V model (MSE loss) | `--output_dir` flag |
 | `denoise_log_N2V_multi.py` | **Multiple images, speckle/multiplicative noise** — log-domain shared N2V; per-image low-count floor diagnostic; same CLI as N2V_multi | `--output_dir` flag |
 | `denoise_PN2V_multi.py` | **Multiple images, mixed noise** — shared UNet + shared GMM; pools pixel pairs from all images for richer noise statistics; same CLI as N2V_multi | `--output_dir` flag |
+| `denoise_PN2V_bic_multi.py` | **Multiple images, mixed noise, auto GMM capacity** — same as PN2V_multi but BIC evaluated on pooled pixel pairs from all images; `--bic_candidates` / `--bic_subsample`; requires `scikit-learn` | `--output_dir` flag |
 | `denoise_GR2R_multi.py` | **Multiple images, unknown additive / shot noise** — R2R shared-ε pair (Gaussian) or GR2R Binomial splitting (Poisson, `--poisson --binomial_alpha 0.15`); per-image σ auto-estimated; `--mc_samples` for MC inference averaging; `--save_model`/`--load_model` | `--output_dir` flag |
 | `denoise_apbsn.py` | AP-BSN (CVPR 2022) — real-world noise, asymmetric PD + blind-spot | configurable |
 | `denoise_apbsn_faithful.py` | **AP-BSN paper-faithful** — DBSNl architecture (CentralMaskedConv2d, dilated branches), L1 loss on all pixels, asymmetric PD (pd_a train ≠ pd_b infer), R3 refinement | `data/denoised_sem_apbsn_faithful.tif` |
@@ -89,6 +91,8 @@ If inference hits OOM: reduce `tile_size` from `[256,256]` → `[128,128]` → `
 - **Multiple images, same conditions** → `denoise_N2V_multi.py`
 - **Single image, Poisson/Gaussian additive noise (full receptive field)** → `denoise_GR2R.py`
 - **Multiple images, unknown additive / Poisson shot noise** → `denoise_GR2R_multi.py`
+- **Mixed noise, Poisson + Gamma, auto GMM capacity** → `denoise_PN2V_bic.py` (BIC selects K; needs `scikit-learn`)
+- **Same as above, multiple images** → `denoise_PN2V_bic_multi.py`
 - **Mixed noise, spatially correlated grain 2–4px** → `denoise_apbsn_lee.py` (`--pd_stride 2`; reusable model)
 - **Same as above, multiple images** → `denoise_apbsn_lee_multi.py`
 - **Real-world complex noise** → `denoise_apbsn.py`

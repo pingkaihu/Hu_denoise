@@ -31,6 +31,30 @@
 #   = DoubleConvBlock, N2VUNet, load_sem_image
 #   = Vectorized blind-spot masking, batched tiled inference
 #
+# Differences from the official PN2V (Krull et al., 2020):
+# ─────────────────────────────────────────────────────────
+# Aspect            │ Official PN2V                  │ This implementation
+# ──────────────────┼────────────────────────────────┼──────────────────────────────
+# Noise model       │ Non-parametric 2D histogram    │ Parametric GMM with signal-
+#                   │ (256×256 bins, no functional   │ dependent mean and log-linear
+#                   │ form assumed)                  │ variance. K fixed by
+#                   │                                │ --n_gaussians.
+# ──────────────────┼────────────────────────────────┼──────────────────────────────
+# Multi-image       │ Not described (single-image    │ Shared GMM fitted on pooled
+# extension         │ paper)                         │ pixel pairs from all images.
+#                   │                                │ Valid when noise statistics
+#                   │                                │ are homogeneous across images.
+# ──────────────────┼────────────────────────────────┼──────────────────────────────
+# Network output    │ K=800 samples from posterior   │ Single scalar per pixel.
+#                   │                                │ K-sample output not implemented.
+# ──────────────────┼────────────────────────────────┼──────────────────────────────
+# Inference         │ MMSE posterior mean            │ Raw UNet output (default).
+#                   │ (800 forward passes)           │ --use_mmse flag is experimental.
+# ──────────────────┼────────────────────────────────┼──────────────────────────────
+# K selection       │ Not applicable (non-parametric)│ Manual --n_gaussians flag.
+#                   │                                │ Use denoise_PN2V_bic_multi.py
+#                   │                                │ for automatic BIC selection.
+#
 
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 #

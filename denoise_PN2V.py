@@ -18,6 +18,29 @@
 #   Applying GAT first would require PN2V to model GAT's residual error
 #   rather than the original physics, which is mathematically redundant.
 #
+# Differences from the official PN2V (Krull et al., 2020):
+# ─────────────────────────────────────────────────────────
+# Aspect            │ Official PN2V                  │ This implementation
+# ──────────────────┼────────────────────────────────┼──────────────────────────────
+# Noise model       │ Non-parametric 2D histogram    │ Parametric GMM:
+#                   │ (256×256 bins, no distribu-    │   μ_k(s) = s + offset_k
+#                   │ tional form assumed)            │   σ²_k(s) = exp(a_k·s + b_k)
+#                   │                                │ Poisson+Gaussian motivated;
+#                   │                                │ K fixed by --n_gaussians.
+# ──────────────────┼────────────────────────────────┼──────────────────────────────
+# Network output    │ K=800 samples {s_k} from       │ Single scalar per pixel.
+#                   │ posterior p(s | context)        │ Full K-sample output requires
+#                   │                                │ UNet head redesign.
+# ──────────────────┼────────────────────────────────┼──────────────────────────────
+# Inference         │ MMSE posterior mean            │ Raw UNet output (default).
+#                   │ ŝ = Σ p(y|s_k)·s_k / Σp(y|s_k)│ --use_mmse flag exists but is
+#                   │ using K=800 forward passes     │ experimental; see
+#                   │                                │ _apply_mmse_tile docstring.
+# ──────────────────┼────────────────────────────────┼──────────────────────────────
+# K selection       │ Not applicable (non-parametric)│ Manual --n_gaussians flag.
+#                   │                                │ Use denoise_PN2V_bic.py for
+#                   │                                │ automatic BIC-based selection.
+#
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 # Usage:
 #   python test_sem.py      # generate synthetic test image (if needed)
