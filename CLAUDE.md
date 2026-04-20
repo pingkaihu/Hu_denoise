@@ -21,6 +21,8 @@ pip install torch tifffile matplotlib numpy
 | `denoise_N2V_test.py` | **Recommended for uniform noise** — optimized version (vectorized masking, batched inference, physical train/val split, edge padding) | `data/denoised_sem_test.tif` |
 | `denoise_PN2V.py` | **Recommended for mixed noise** — PN2V pure PyTorch; GMM models raw Poisson-Gamma directly; no GAT pre-processing; includes low-count diagnostic. Note: uses parametric GMM (official uses non-parametric histogram); single scalar output (official uses K=800 samples) | `data/denoised_sem_PN2V.tif` |
 | `denoise_PN2V_bic.py` | **Mixed noise, auto GMM capacity** — same as PN2V but runs BIC (Schwarz 1978) over K ∈ {2,3,5,7} before training; recommended when ENL < 3 (strong speckle); requires `scikit-learn` | `data/denoised_sem_PN2V_bic.tif` |
+| `denoise_PN2V_juglab.py` | **PN2V paper-faithful (juglab port)** — non-parametric 2D histogram noise model (256×256 bins); K=800 output samples; MMSE posterior mean inference `Σ p(y\|s_k)·s_k / Σ p(y\|s_k)`; self-calibration by default or `--calib_dir` for external images; `--K` / `--n_bins` / `--batch_size` | `data/denoised_sem_pn2v_juglab.tif` |
+| `denoise_PN2V_juglab_multi.py` | **PN2V juglab, multiple images** — same histogram + K=800 MMSE as juglab.py; histogram built from ALL training images pooled; shared UNet; `--train_dir` / `--save_model` / `--load_model`; per-image MMSE + prior outputs | `--output_dir` flag |
 | `denoise_log_N2V.py` | Speckle / multiplicative noise — applies log transform before training | `data/denoised_sem_log_torch.tif` |
 | `denoise_N2V_multi.py` | Multiple images under similar conditions — one shared N2V model (MSE loss) | `--output_dir` flag |
 | `denoise_log_N2V_multi.py` | **Multiple images, speckle/multiplicative noise** — log-domain shared N2V; per-image low-count floor diagnostic; same CLI as N2V_multi | `--output_dir` flag |
@@ -34,6 +36,7 @@ pip install torch tifffile matplotlib numpy
 | `denoise_apbsn_lee_multi.py` | **AP-BSN official-style, multiple images** — same APBSN+DBSNl as lee.py; raw-crop dataset (no PD pre-computation); shared model trained on image pool; per-image `APBSN.denoise()` with torch R3; `--train_dir` / `--save_model` / `--load_model` | `--output_dir` flag |
 | `denoise_DIP.py` | Deep Image Prior (CVPR 2018) — no dataset, single-image generator, no noise model assumption, EMA early stopping; ~3-5 min on GPU | `data/denoised_sem_DIP.tif` |
 | `denoise_GR2R.py` | **R2R/GR2R** — no blind-spot masking; Gaussian: R2R shared-ε pair (Pang et al. CVPR 2021); Poisson shot noise: GR2R Binomial splitting (`--poisson --binomial_alpha 0.15`, Monroy et al. CVPR 2025); `--mc_samples` for MC inference averaging; auto-estimates noise std | `data/denoised_sem_GR2R.tif` |
+| `denoise_N2Score.py` | **Noise2Score (NeurIPS 2021)** — AR-DAE score estimation + Tweedie's formula; supports Gaussian (`--noise_model gaussian`), Poisson (`--noise_model poisson --poisson_zeta 0.05`), Gamma; `--blind` for automatic σ search via TV-norm | `data/denoised_sem_N2Score.tif` |
 | `denoise_N2V_careamics.py` | CAREamics-based pipeline (legacy) | `denoised_sem.tif` |
 
 ## Running the Denoiser
@@ -93,6 +96,8 @@ If inference hits OOM: reduce `tile_size` from `[256,256]` → `[128,128]` → `
 - **Multiple images, unknown additive / Poisson shot noise** → `denoise_GR2R_multi.py`
 - **Mixed noise, Poisson + Gamma, auto GMM capacity** → `denoise_PN2V_bic.py` (BIC selects K; needs `scikit-learn`)
 - **Same as above, multiple images** → `denoise_PN2V_bic_multi.py`
+- **Mixed noise, paper-faithful PN2V (histogram + K=800 MMSE)** → `denoise_PN2V_juglab.py` (juglab/pn2v port; self-calibration default; `--calib_dir` for external images)
+- **Same as above, multiple images** → `denoise_PN2V_juglab_multi.py` (shared histogram from pooled images; `--train_dir` / `--save_model`)
 - **Mixed noise, spatially correlated grain 2–4px** → `denoise_apbsn_lee.py` (`--pd_stride 2`; reusable model)
 - **Same as above, multiple images** → `denoise_apbsn_lee_multi.py`
 - **Real-world complex noise** → `denoise_apbsn.py`
@@ -100,6 +105,7 @@ If inference hits OOM: reduce `tile_size` from `[256,256]` → `[128,128]` → `
 - **Same as above, multiple images** → `denoise_apbsn_faithful_multi.py`
 - **Unknown noise distribution** → `denoise_DIP.py` (no noise model assumption)
 - **N2V leaves checkerboard artifacts** → `denoise_DIP.py`
+- **Unified Gaussian/Poisson/Gamma, score-based framework** → `denoise_N2Score.py` (Tweedie's formula; `--blind` for auto σ; NeurIPS 2021)
 - **Unknown noise type** → run BM3D baseline first (`bm3d.bm3d(image, sigma_psd=0.05)`) to visually assess
 
 ## Documentation

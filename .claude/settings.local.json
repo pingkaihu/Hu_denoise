@@ -40,7 +40,9 @@
       "WebFetch(domain:api.github.com)",
       "WebFetch(domain:ar5iv.labs.arxiv.org)",
       "Bash(ls h:/Hu_denoise/document/*audit* h:/Hu_denoise/document/*Audit*)",
-      "Bash(ls h:/Hu_denoise/document/audit_*.md)"
+      "Bash(ls h:/Hu_denoise/document/audit_*.md)",
+      "WebFetch(domain:papers.neurips.cc)",
+      "WebFetch(domain:openreview.net)"
     ]
   }
 }

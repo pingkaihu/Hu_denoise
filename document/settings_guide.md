@@ -1,7 +1,7 @@
 # 參數設定指南
 
 **環境假設：** NVIDIA RTX 3080 (10 GB VRAM)，Windows，Python 3.12  
-**適用腳本：** `denoise_N2V.py`、`denoise_log_N2V.py`、`denoise_N2V_multi.py`、`denoise_log_N2V_multi.py`、`denoise_PN2V.py`、`denoise_PN2V_multi.py`、`denoise_apbsn.py`、`denoise_apbsn_multi.py`、`denoise_apbsn_faithful.py`、`denoise_apbsn_faithful_multi.py`、`denoise_GR2R.py`、`denoise_GR2R_multi.py`、`denoise_DIP.py`
+**適用腳本：** `denoise_N2V.py`、`denoise_log_N2V.py`、`denoise_N2V_multi.py`、`denoise_log_N2V_multi.py`、`denoise_PN2V.py`、`denoise_PN2V_multi.py`、`denoise_PN2V_juglab.py`、`denoise_PN2V_juglab_multi.py`、`denoise_apbsn.py`、`denoise_apbsn_multi.py`、`denoise_apbsn_faithful.py`、`denoise_apbsn_faithful_multi.py`、`denoise_GR2R.py`、`denoise_GR2R_multi.py`、`denoise_DIP.py`
 
 > **時間估計說明：** 以 RTX 3080 實測為基準，`num_workers=0`。  
 > 首次執行因 CUDA kernel 編譯會額外多 1–2 分鐘。  
@@ -271,6 +271,81 @@ python denoise_PN2V_multi.py --input_dir ./new_imgs --load_model pn2v_model.pt
 | `--n_gaussians` | GMM 成分數（預設 `3`，選擇方法同單張版） |
 | `--gmm_pretrain_epochs` | GMM 預訓練輪數（預設 `300`） |
 | `--save_model` / `--load_model` | 儲存 / 載入模型（`.pt`），`--load_model` 跳過訓練 |
+
+---
+
+### `denoise_PN2V_juglab.py`（單張，paper-faithful juglab 移植版）
+
+**何時使用：** 想要最接近原始論文（Krull et al. 2020）的實現；使用非參數 histogram 噪聲模型 + K=800 樣本 + MMSE 後驗推論，而非 parametric GMM。
+
+```bash
+# 自我校準（預設，無需額外影像）
+python denoise_PN2V_juglab.py --input data/test_sem.tif
+
+# 使用外部校準影像建立 histogram（更準確的噪聲統計）
+python denoise_PN2V_juglab.py --input data/test_sem.tif --calib_dir ./sem_images
+```
+
+#### 與 `denoise_PN2V.py` 的主要差異
+
+| 面向 | `denoise_PN2V.py` | `denoise_PN2V_juglab.py` |
+|---|---|---|
+| 噪聲模型 | Parametric GMM（K 個高斯） | Non-parametric 2D histogram（256×256 bins） |
+| UNet 輸出 | 1 scalar / pixel | K=800 samples / pixel |
+| 訓練 loss | GMM NLL | 負 log-evidence：`-log(1/K Σ p(y\|s_k))` |
+| 推論方式 | 直接輸出 UNet 預測值 | MMSE 後驗均值：`Σ p(y\|s_k)·s_k / Σ p(y\|s_k)` |
+| GMM 預訓練 | 需要（300 epochs） | 無（histogram 一次建立即固定） |
+
+#### juglab 專屬核心參數
+
+| 參數 | 預設值 | 說明 | 調整方向 |
+|---|---|---|---|
+| `--calib_dir` | （無）| 外部校準影像目錄；未設時使用輸入影像自我校準 | 有同批次多張 SEM 圖可提供時使用 |
+| `--n_bins` | `256` | Histogram bin 數（每軸） | 影像像素少時可降至 `128` 避免稀疏 |
+| `--K` | `800` | UNet 輸出樣本數（官方值） | 降至 `200` 可大幅節省 VRAM |
+| `--batch_size` | `32` | 訓練 batch size（K=800 時記憶體需求高） | OOM 時降至 `16` 或 `8` |
+| `--infer_batch` | `2` | 推論 tile batch size | OOM 時降至 `1` |
+
+> **記憶體估算：** `batch_size × K × patch_size² × 4 bytes`  
+> B=32, K=800, P=64 → ~840 MB GPU 記憶體。8GB GPU 建議 B≤32。
+
+---
+
+### `denoise_PN2V_juglab_multi.py`（多張，paper-faithful juglab 移植版）
+
+**何時使用：** 有多張在相同 SEM 條件下取得的影像；histogram 從所有訓練影像的 pixel pair 合併建立，噪聲統計更豐富；一個共用 UNet 對所有影像推論。
+
+```bash
+# 以 --input_dir 同時作為訓練集與推論集
+python denoise_PN2V_juglab_multi.py --input_dir ./sem_images --output_dir ./denoised
+
+# 指定獨立訓練集
+python denoise_PN2V_juglab_multi.py --train_dir ./ref_imgs --input_dir ./targets --output_dir ./out
+
+# 儲存 checkpoint（histogram + UNet）並重用
+python denoise_PN2V_juglab_multi.py --input_dir ./sem_images --save_model juglab.pt
+python denoise_PN2V_juglab_multi.py --input_dir ./new_imgs   --load_model juglab.pt
+```
+
+#### 與 `denoise_PN2V_juglab.py` 的差異
+
+| 面向 | juglab.py（單張） | juglab_multi.py（多張） |
+|---|---|---|
+| Histogram 建立 | 單張影像自我校準或 `--calib_dir` | 所有訓練影像的 pixel pair 合併建立 |
+| 訓練資料集 | 單張 `N2VDataset` | `MultiImagePN2VDataset`（跨影像均勻抽取） |
+| Patches/epoch | 2000 | `max(2000, 500 × n_images)` |
+| Checkpoint | 無 | 含 histogram + UNet + K + n_bins |
+
+#### multi 專屬參數
+
+| 參數 | 說明 |
+|---|---|
+| `--input_dir` | 推論用影像目錄（未指定 `--train_dir` 時同作訓練集） |
+| `--train_dir` | 僅訓練用目錄（可與 `--input_dir` 不同） |
+| `--output_dir` | 輸出目錄（預設 `denoised`） |
+| `--save_model` / `--load_model` | 儲存/載入 checkpoint `.pt`；`--load_model` 跳過訓練 |
+
+其他參數（`--K`、`--n_bins`、`--batch_size`、`--infer_batch`、`--epochs` 等）與 `denoise_PN2V_juglab.py` 相同。
 
 ---
 
