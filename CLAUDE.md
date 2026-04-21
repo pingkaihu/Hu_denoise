@@ -23,6 +23,8 @@ pip install torch tifffile matplotlib numpy
 | `denoise_PN2V_bic.py` | **Mixed noise, auto GMM capacity** — same as PN2V but runs BIC (Schwarz 1978) over K ∈ {2,3,5,7} before training; recommended when ENL < 3 (strong speckle); requires `scikit-learn` | `data/denoised_sem_PN2V_bic.tif` |
 | `denoise_PN2V_juglab.py` | **PN2V paper-faithful (juglab port)** — non-parametric 2D histogram noise model (256×256 bins); K=800 output samples; MMSE posterior mean inference `Σ p(y\|s_k)·s_k / Σ p(y\|s_k)`; self-calibration by default or `--calib_dir` for external images; `--K` / `--n_bins` / `--batch_size` | `data/denoised_sem_pn2v_juglab.tif` |
 | `denoise_PN2V_juglab_multi.py` | **PN2V juglab, multiple images** — same histogram + K=800 MMSE as juglab.py; histogram built from ALL training images pooled; shared UNet; `--train_dir` / `--save_model` / `--load_model`; per-image MMSE + prior outputs | `--output_dir` flag |
+| `denoise_PPN2V_juglab.py` | **PPN2V paper-faithful (juglab port)** — parametric signal-dependent GMM noise model (`p(y\|s)=Σ α_k(s)·N`); bootstrap: runs N2V for `--n2v_epochs` → pseudo-clean → fit GMM → freeze → train K=800 UNet; or `--calib_dir` to skip bootstrap; `--n_components` / `--gmm_steps` | `data/denoised_sem_ppn2v_juglab.tif` |
+| `denoise_PPN2V_juglab_multi.py` | **PPN2V juglab, multiple images** — same parametric GMM + bootstrap as PPN2V_juglab.py; shared N2V bootstraps on ALL images; GMM fitted from pooled pseudo-clean pairs; shared PN2V UNet; `--train_dir` / `--save_model` / `--load_model` | `--output_dir` flag |
 | `denoise_log_N2V.py` | Speckle / multiplicative noise — applies log transform before training | `data/denoised_sem_log_torch.tif` |
 | `denoise_N2V_multi.py` | Multiple images under similar conditions — one shared N2V model (MSE loss) | `--output_dir` flag |
 | `denoise_log_N2V_multi.py` | **Multiple images, speckle/multiplicative noise** — log-domain shared N2V; per-image low-count floor diagnostic; same CLI as N2V_multi | `--output_dir` flag |
@@ -98,6 +100,8 @@ If inference hits OOM: reduce `tile_size` from `[256,256]` → `[128,128]` → `
 - **Same as above, multiple images** → `denoise_PN2V_bic_multi.py`
 - **Mixed noise, paper-faithful PN2V (histogram + K=800 MMSE)** → `denoise_PN2V_juglab.py` (juglab/pn2v port; self-calibration default; `--calib_dir` for external images)
 - **Same as above, multiple images** → `denoise_PN2V_juglab_multi.py` (shared histogram from pooled images; `--train_dir` / `--save_model`)
+- **Mixed noise, paper-faithful PPN2V (parametric GMM + bootstrap)** → `denoise_PPN2V_juglab.py` (signal-dependent GMM; bootstrap N2V auto-calibrates without external images; `--calib_dir` to use external images; `--n_components` / `--n2v_epochs`)
+- **Same as above, multiple images** → `denoise_PPN2V_juglab_multi.py` (shared bootstrap N2V on all images; pooled GMM fitting; `--train_dir` / `--save_model`)
 - **Mixed noise, spatially correlated grain 2–4px** → `denoise_apbsn_lee.py` (`--pd_stride 2`; reusable model)
 - **Same as above, multiple images** → `denoise_apbsn_lee_multi.py`
 - **Real-world complex noise** → `denoise_apbsn.py`
