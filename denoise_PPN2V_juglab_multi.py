@@ -146,7 +146,7 @@ class GMMNoiseModel(nn.Module):
             s.unsqueeze(-1) * self.weight_a + self.weight_b, dim=-1
         )                                                           # (N, C)
         mu        = s.unsqueeze(-1) + self.mean_offsets             # (N, C)
-        log_var   = self.var_a * s.unsqueeze(-1) + self.var_b       # (N, C)
+        log_var   = (self.var_a * s.unsqueeze(-1) + self.var_b).clamp(min=-7.0)  # (N, C)
         log_gauss = -0.5 * (
             (y.unsqueeze(-1) - mu) ** 2 / log_var.exp()
             + log_var
