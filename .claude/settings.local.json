@@ -42,7 +42,11 @@
       "Bash(ls h:/Hu_denoise/document/*audit* h:/Hu_denoise/document/*Audit*)",
       "Bash(ls h:/Hu_denoise/document/audit_*.md)",
       "WebFetch(domain:papers.neurips.cc)",
-      "WebFetch(domain:openreview.net)"
+      "WebFetch(domain:openreview.net)",
+      "Bash(npx skills *)",
+      "WebFetch(domain:www.frontiersin.org)",
+      "WebFetch(domain:prelights.biologists.com)",
+      "WebFetch(domain:juglab.github.io)"
     ]
   }
 }
