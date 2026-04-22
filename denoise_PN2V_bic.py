@@ -26,27 +26,30 @@
 #
 # How BIC selection works:
 #   1. Build (signal_proxy, observation) pixel pairs from the image.
-#   2. For each K in --bic_candidates, fit a sklearn GaussianMixture on
-#      the 2D (s_proxy, y) space and compute BIC = K_params·ln(n) − 2·ln(L).
-#   3. Select the K with the lowest BIC.
-#   4. Train the full PN2V pipeline with that K.
+#   2. For each n_comp in --gmm_candidates, fit a sklearn GaussianMixture on
+#      the 2D (s_proxy, y) space and compute BIC = n_params·ln(n) − 2·ln(L).
+#   3. Select the n_comp with the lowest BIC.
+#   4. Train the full PN2V pipeline with that n_components.
 #
 # When to use this script vs. denoise_PN2V.py:
 #   Use this script when:
-#   - ENL < 3 (strong speckle): default K=3 may underfit the heavy tail.
-#   - You want automatic K tuning without manual trial and error.
+#   - ENL < 3 (strong speckle): default n_components=3 may underfit the heavy tail.
+#   - You want automatic n_components tuning without manual trial and error.
 #   Use denoise_PN2V.py directly when:
-#   - You already know K from domain knowledge (e.g. K=2 for pure Poisson+Gaussian).
+#   - You already know n_components from domain knowledge (e.g. 2 for pure Poisson+Gaussian).
 #   - Training speed is critical and you want to skip BIC evaluation.
 #
 # Differences from the official PN2V (Krull et al., 2020):
 # ─────────────────────────────────────────────────────────
 # Aspect            │ Official PN2V                  │ This implementation
 # ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Noise model       │ Non-parametric 2D histogram    │ Parametric GMM (auto K via BIC)
-#                   │ (no K to choose)               │
+# Noise model       │ Non-parametric 2D histogram    │ Parametric GMM (auto n_components
+#                   │ (no component count to choose) │ via BIC)
 # ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Network output    │ K=800 samples from posterior   │ Single scalar per pixel.
+# Network output    │ 800 posterior samples/pixel    │ Single scalar per pixel.
+#                   │ (K=800 output channels; K here │
+#                   │ = posterior samples, unrelated │
+#                   │ to GMM components)             │
 # ──────────────────┼────────────────────────────────┼──────────────────────────────
 # Inference         │ MMSE posterior mean            │ Raw UNet output (default).
 #                   │ (800 forward passes)           │ --use_mmse is experimental.
@@ -54,9 +57,9 @@
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy  scikit-learn
 # Usage:
 #   python test_sem.py          # generate synthetic test image (if needed)
-#   python denoise_PN2V_bic.py  # BIC selects K, then trains + denoises
-#   python denoise_PN2V_bic.py --bic_candidates 2 3 5  # custom candidates
-#   python denoise_PN2V_bic.py --n_gaussians 3          # skip BIC, use K=3
+#   python denoise_PN2V_bic.py  # BIC selects n_components, then trains + denoises
+#   python denoise_PN2V_bic.py --gmm_candidates 2 3 5  # custom candidates
+#   python denoise_PN2V_bic.py --n_gaussians 3          # skip BIC, use 3 components
 # ============================================================
 
 import math
@@ -156,19 +159,18 @@ class GMMNoiseModel(nn.Module):
     """
     Signal-dependent Gaussian Mixture Model: p(y | s).
 
-    For each of K components:
+    For each of n_gaussians components:
         μ_k(s)  = s + offset_k
         σ²_k(s) = exp(a_k · s + b_k)   (log-linear, always positive)
     """
 
     def __init__(self, n_gaussians: int = 3):
         super().__init__()
-        K = n_gaussians
-        self.n_gaussians  = K
-        self.log_weights  = nn.Parameter(torch.zeros(K))
-        self.mean_offsets = nn.Parameter(torch.linspace(-0.05, 0.05, K))
-        self.var_a        = nn.Parameter(torch.zeros(K))
-        self.var_b        = nn.Parameter(torch.full((K,), -6.0))
+        self.n_gaussians  = n_gaussians
+        self.log_weights  = nn.Parameter(torch.zeros(n_gaussians))
+        self.mean_offsets = nn.Parameter(torch.linspace(-0.05, 0.05, n_gaussians))
+        self.var_a        = nn.Parameter(torch.zeros(n_gaussians))
+        self.var_b        = nn.Parameter(torch.full((n_gaussians,), -6.0))
 
     def log_prob(self, y: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
         """log p(y | s).  y, s: (N,)  →  (N,)"""
@@ -262,7 +264,7 @@ class N2VDataset(Dataset):
 
 
 # ============================================================
-# 5. BIC-Based K Selection  (A3 — novel engineering addition)
+# 5. BIC-Based GMM Component Count Selection  (A3 — novel engineering addition)
 # ============================================================
 
 def _build_pixel_pairs(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -292,16 +294,16 @@ def select_num_gaussians_bic(
     random_state: int       = 42,
 ) -> int:
     """
-    Select the number of GMM components K using the Bayesian Information Criterion.
+    Select the number of GMM components using the Bayesian Information Criterion.
 
-    BIC = k_params · ln(n) − 2 · ln(L̂)
+    BIC = n_params · ln(n) − 2 · ln(L̂)
 
-    where k_params = 5K (weights K-1, mean_offsets K, var_a K, var_b K; one
-    weight is constrained by normalization), and L̂ is the maximum likelihood
-    of a sklearn GaussianMixture fitted on the 2D (s_proxy, y) feature space.
+    where n_params = 5·n_comp (weights n_comp-1, mean_offsets n_comp, var_a n_comp,
+    var_b n_comp; one weight is constrained by normalization), and L̂ is the maximum
+    likelihood of a sklearn GaussianMixture fitted on the 2D (s_proxy, y) feature space.
 
     The 2D joint GMM is a proxy for the conditional p(y|s) used in PN2V.
-    It ranks K candidates in the same order as the conditional model for
+    It ranks component count candidates in the same order as the conditional model for
     this purpose (component selection), without requiring multiple full
     GMMNoiseModel training runs.
 
@@ -343,7 +345,7 @@ def select_num_gaussians_bic(
     else:
         n_bic = n
 
-    print(f"\nBIC model selection — evaluating K ∈ {candidates} "
+    print(f"\nBIC model selection — evaluating n_components ∈ {candidates} "
           f"({n_bic:,} pixel pairs) ...")
 
     best_bic, best_k = np.inf, candidates[0]
@@ -357,13 +359,13 @@ def select_num_gaussians_bic(
                 n_init=3,
             ).fit(X)
             bic = gmm.bic(X)
-            print(f"  K={k}:  BIC = {bic:12.1f}")
+            print(f"  n_comp={k}:  BIC = {bic:12.1f}")
             if bic < best_bic:
                 best_bic, best_k = bic, k
         except Exception as exc:
-            print(f"  K={k}:  fit failed ({exc}), skipping")
+            print(f"  n_comp={k}:  fit failed ({exc}), skipping")
 
-    print(f"  → Selected K = {best_k}  (lowest BIC = {best_bic:.1f})\n")
+    print(f"  → Selected n_components = {best_k}  (lowest BIC = {best_bic:.1f})\n")
     return best_k
 
 
@@ -396,7 +398,7 @@ def pretrain_gmm(
     N      = y_flat.shape[0]
 
     optimizer = optim.Adam(noise_model.parameters(), lr=lr)
-    print(f"Pre-training GMM (K={noise_model.n_gaussians}, {n_epochs} epochs, {N:,} pairs) ...")
+    print(f"Pre-training GMM (n_components={noise_model.n_gaussians}, {n_epochs} epochs, {N:,} pairs) ...")
 
     for epoch in range(1, n_epochs + 1):
         idx  = torch.randperm(N, device=device)[:batch_size]
@@ -445,7 +447,7 @@ def train_pn2v(
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
 
     print(f"Device: {device}  |  UNet: {sum(p.numel() for p in model.parameters()):,} params"
-          f"  |  GMM: K={noise_model.n_gaussians}")
+          f"  |  GMM: n_components={noise_model.n_gaussians}")
     print(f"patch_size={patch_size}  batch_size={batch_size}  epochs={num_epochs}")
 
     for epoch in range(1, num_epochs + 1):
@@ -600,7 +602,7 @@ def save_outputs(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="PN2V with BIC auto-selection of GMM components K."
+        description="PN2V with BIC auto-selection of GMM component count."
     )
     parser.add_argument('--input',               type=str,   default='data/test_sem.tif')
     parser.add_argument('--output',              type=str,   default='')
@@ -608,9 +610,9 @@ def main() -> None:
     parser.add_argument('--patch_size',          type=int,   default=64)
     parser.add_argument('--batch_size',          type=int,   default=128)
     parser.add_argument('--n_gaussians',         type=int,   default=0,
-                        help='Fix K (skip BIC). 0 = auto BIC selection (default).')
-    parser.add_argument('--bic_candidates',      type=int,   nargs='+', default=[2, 3, 5, 7, 9, 11, 13],
-                        help='K values to evaluate for BIC (default: 2 3 5 7 9 11 13)')
+                        help='Fix number of GMM components (skip BIC). 0 = auto via BIC (default).')
+    parser.add_argument('--gmm_candidates',      type=int,   nargs='+', default=[2, 3, 5, 7, 9, 11, 13],
+                        help='GMM component counts to evaluate for BIC (default: 2 3 5 7 9 11 13)')
     parser.add_argument('--bic_subsample',       type=int,   default=100_000,
                         help='Max pixel pairs for BIC evaluation (default: 100000)')
     parser.add_argument('--gmm_pretrain_epochs', type=int,   default=300)
@@ -640,14 +642,14 @@ def main() -> None:
     else:
         print(f"Background mean={bg_mean:.4f}  (normal signal level)")
 
-    # --- BIC or manual K selection ---
+    # --- BIC or manual component count selection ---
     if args.n_gaussians > 0:
         n_gaussians = args.n_gaussians
-        print(f"Using fixed K={n_gaussians} (--n_gaussians specified, BIC skipped)")
+        print(f"Using fixed n_components={n_gaussians} (--n_gaussians specified, BIC skipped)")
     else:
         n_gaussians = select_num_gaussians_bic(
             image,
-            candidates=args.bic_candidates,
+            candidates=args.gmm_candidates,
             subsample=args.bic_subsample,
         )
 
@@ -673,7 +675,7 @@ def main() -> None:
     # --- Save ---
     save_outputs(image, denoised, img_min, img_max, tif_path=output_path)
     noise_model.plot_noise_model(save_path="data/noise_model_PN2V_bic.png")
-    print(f"BIC selected K={n_gaussians}")
+    print(f"BIC selected n_components={n_gaussians}")
 
 
 if __name__ == '__main__':
