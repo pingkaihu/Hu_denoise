@@ -559,6 +559,157 @@ reducing batch size to ≤4 or using mixed precision.
 
 ---
 
+## 7. Extension: Log Transform + PPN2V
+
+### 7.1 Motivation
+
+SEM noise is rarely purely Poisson or purely multiplicative speckle. It commonly contains:
+
+| Component | Distribution | Characteristic |
+|---|---|---|
+| Shot noise | Poisson | Signal-dependent variance: Var ∝ signal |
+| Speckle | Gamma (L, 1/L) | Multiplicative: y = x · n, Var ∝ signal² |
+| Readout | Gaussian | Additive: Var constant |
+
+PPN2V's GMM is designed for signal-dependent Poisson-like noise. When Gamma speckle is dominant, the GMM must simultaneously fit the multiplicative structure AND the Poisson residual — a harder fitting problem. The log transform offers a principled way to separate these two components before training.
+
+---
+
+### 7.2 Mathematical Rationale
+
+For multiplicative speckle `y = x · n` where `n ~ Gamma(L, 1/L)`:
+
+```
+log(y) = log(x) + log(n)
+```
+
+After log:
+- `log(n)` is approximately Gaussian (CLT near n ≈ 1), with **signal-independent** variance ≈ 1/L
+- The multiplicative structure is removed → additive additive noise in log domain
+- Residual Poisson component (shot noise) partially persists in log domain as a weaker signal-dependency
+
+**Why this matters for PPN2V's GMM:**
+
+| Domain | GMM task |
+|---|---|
+| Linear (no log) | Must model full Gamma + Poisson signal-dependency together |
+| Log (with log) | Gamma component already flattened; GMM models residual Poisson only |
+
+The GMM in the log domain needs fewer components and converges more stably, because `var_a` (the signal-dependent variance slope) carries a weaker signal.
+
+---
+
+### 7.3 Pipeline Design
+
+Log transform is applied at the **very front** of the pipeline — bootstrap N2V, GMM fitting, UNet training, and MMSE inference all operate in the log-normalized [0, 1] domain. The inverse transform is applied after MMSE.
+
+```
+load_sem_image()          → [0,1] linear, stores (img_min, img_max)
+  ↓
+apply_log_transform()     → log1p → renorm to [0,1], stores (log_min, log_max)
+  ↓
+  [Phase 1] bootstrap N2V   ← log domain
+  [Phase 1] GMM fitting     ← log domain (s_proxy, y) pairs
+  [Phase 2] PPN2V UNet      ← log domain
+  [inference] MMSE          ← log domain
+  ↓
+inverse_log_transform()   → denorm → expm1 → [0,1] linear
+  ↓
+restore original range    → * (img_max - img_min) + img_min → save TIF
+```
+
+The log normalization is **per-image** (stores individual `log_min`, `log_max`) to handle different intensity ranges across images.
+
+---
+
+### 7.4 Pros and Cons
+
+**Pros**
+
+1. **Pre-conditions GMM fitting**: Log removes the dominant Gamma variance-signal coupling. The GMM's signal-dependent components (`var_a`, `weight_a`) can focus on the weaker residual Poisson structure instead of fighting the multiplicative component.
+
+2. **Better bootstrap N2V quality**: In the log domain, noise is closer to Gaussian with approximately constant variance. N2V's MSE loss is the optimal estimator under this assumption, so the bootstrap pseudo-clean is more accurate → GMM is calibrated on a cleaner signal proxy.
+
+3. **Fewer GMM components needed**: Log flattens the dominant source of non-Gaussianity. In practice, `n_components=2` may suffice in the log domain where `n_components=3–5` was needed in the linear domain.
+
+4. **Smooth inverse**: `expm1` is monotonic and smooth, so the inverse transform introduces no additional bias (unlike the Anscombe Transform's exact unbiased inverse, which requires a complex correction formula).
+
+**Cons / Risks**
+
+1. **Theoretical redundancy (main concern)**: If log fully Gaussianizes the noise, PPN2V's GMM reduces to a trivial 1-component Gaussian — equivalent to log + plain N2V but at 3–5× the computational cost (K=800 MMSE overhead). The benefit is only real when the log domain still has non-Gaussian residual structure.
+
+2. **MMSE not optimal in original domain**: MMSE is computed in the log domain; `expm1(MMSE_log) ≠ MMSE_linear` because expm1 is non-linear. In practice, the bias is small (expm1 is smooth and the log-domain denoising quality is high), but it is a theoretical imperfection.
+
+3. **Low-count bias**: For images where background pixels are near 0 in the normalized [0,1] domain, `log1p` at near-zero values introduces non-linear compression. This can produce a systematic graying of dark regions. **Diagnostic**: if `image[background_region].mean() < 0.02`, log transform is risky; prefer direct PPN2V.
+
+4. **Not useful for pure Poisson noise**: Log distorts Poisson statistics without removing them — in this case, direct PPN2V (no log) is more principled.
+
+---
+
+### 7.5 Comparison with Existing Methods
+
+| Method | Handles | GMM task | When to prefer |
+|---|---|---|---|
+| `denoise_log_N2V.py` | Pure Gamma speckle | None (MSE loss) | Fast, noise is clearly multiplicative |
+| `denoise_PPN2V_juglab.py` | Poisson + light speckle | Full signal-dependency | Shot noise dominant; no strong speckle |
+| **`denoise_log_PPN2V_juglab.py`** | **Speckle + Poisson mix** | **Residual Poisson in log domain** | **Both speckle grain AND signal-dependent noise visible** |
+| `denoise_GR2R.py` | Gamma/Poisson (exact) | None (recorruption-based) | When Gamma parameter L can be estimated |
+
+**Decision rule before choosing log + PPN2V:**
+
+```python
+import numpy as np
+
+# Diagnostic 1: check low-count risk
+bg = image[10:30, 10:30]           # homogeneous background region
+if bg.mean() < 0.02:
+    print("WARNING: low-count region → log bias risk. Use PPN2V directly.")
+
+# Diagnostic 2: check noise character
+# Poisson: Var ∝ mean  →  coefficient of variation (CV) ≈ 1/sqrt(mean)
+# Gamma:   Var ∝ mean² →  CV ≈ constant (≈ 1/sqrt(L))
+roi = image[50:150, 50:150]
+cv = roi.std() / (roi.mean() + 1e-8)
+if cv > 0.15:
+    print(f"CV={cv:.3f}: strong multiplicative component → log + PPN2V candidate")
+else:
+    print(f"CV={cv:.3f}: weak multiplicative component → PPN2V alone may suffice")
+```
+
+---
+
+### 7.6 Implementation
+
+Scripts created in this project:
+
+| Script | Input | Output |
+|---|---|---|
+| `denoise_log_PPN2V_juglab.py` | Single `.tif/.png` | `data/denoised_sem_log_ppn2v_juglab.tif` |
+| `denoise_log_PPN2V_juglab_multi.py` | Directory (`--input_dir`) | `{stem}_denoised_log_ppn2v_juglab.tif` |
+
+**New functions added (Section 2 in both scripts):**
+
+```python
+def apply_log_transform(image: np.ndarray) -> Tuple[np.ndarray, float, float]:
+    """log1p on [0,1] image, renorm to [0,1]. Returns (log_norm, log_min, log_max)."""
+    log_img  = np.log1p(image)
+    log_min  = float(log_img.min())
+    log_max  = float(log_img.max())
+    log_norm = (log_img - log_min) / (log_max - log_min + 1e-8)
+    return log_norm.astype(np.float32), log_min, log_max
+
+def inverse_log_transform(denoised_log_norm, log_min, log_max) -> np.ndarray:
+    """Undo apply_log_transform: denorm → expm1. Returns [0,1] linear."""
+    denoised_log = denoised_log_norm * (log_max - log_min) + log_min
+    return np.expm1(denoised_log).astype(np.float32)
+```
+
+All other functions (`GMMNoiseModel`, `PN2VUNet`, `run_bootstrap_n2v`, `fit_gmm_from_pairs`, `train_ppn2v`, `predict_tiled`) are **unchanged** from `denoise_PPN2V_juglab.py`.
+
+**Multi-image metadata:** `infer_meta` stores `(img_min, img_max, log_min, log_max)` per image (expanded from the 2-tuple in `denoise_PPN2V_juglab_multi.py`) to enable correct per-image inverse transform.
+
+---
+
 ## 6. References
 
 | Paper | arXiv | Local PDF |
