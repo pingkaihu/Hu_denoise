@@ -46,7 +46,8 @@
       "Bash(npx skills *)",
       "WebFetch(domain:www.frontiersin.org)",
       "WebFetch(domain:prelights.biologists.com)",
-      "WebFetch(domain:juglab.github.io)"
+      "WebFetch(domain:juglab.github.io)",
+      "Bash(git mv *)"
     ]
   }
 }

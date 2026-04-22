@@ -1,4 +1,4 @@
-# Audit Report: `denoise_N2V_multi.py` & `denoise_PN2V_multi.py`
+# Audit Report: `denoise_N2V_multi.py` & `denoise_N2V_GMM_multi.py`
 
 **Date:** 2026-04-16  
 **Reviewer:** Claude Sonnet 4.6  
@@ -79,7 +79,7 @@ For multi-image training with `patches_per_epoch ≫ H×W/P²` the overlap proba
 
 ---
 
-## Part 2 — `denoise_PN2V_multi.py`
+## Part 2 — `denoise_N2V_GMM_multi.py`
 
 ### 2.1 Noise Model Architecture — GMM vs. Histogram (High)
 
@@ -264,13 +264,13 @@ Or add a CLI flag `--mask_ratio` so users can tune it.
 ## Applied Fixes — 2026-04-17
 
 The following changes were implemented across **four files**:
-`denoise_N2V.py`, `denoise_N2V_multi.py`, `denoise_PN2V.py`, `denoise_PN2V_multi.py`.
+`denoise_N2V.py`, `denoise_N2V_multi.py`, `denoise_N2V_GMM.py`, `denoise_N2V_GMM_multi.py`.
 
 Original versions backed up to `backup/` with suffix `_2026-04-16`.
 
 ### Fix 1 — MMSE Posterior Mean at Inference (Issue 8 / Priority 1)
 
-**Scope:** `denoise_PN2V.py`, `denoise_PN2V_multi.py`
+**Scope:** `denoise_N2V_GMM.py`, `denoise_N2V_GMM_multi.py`
 
 **Implementation (2026-04-16):** Added `_apply_mmse_tile()` implementing Equation (4) of Krull et al. (2020) with a uniform hypothesis grid around `s_pred`. `predict_tiled` gained a `noise_model` parameter; `main()` defaulted to MMSE enabled.
 
@@ -351,4 +351,4 @@ dc[zero_mask] = dc_fix
 
 `denoise_N2V_multi.py` is a functionally correct N2V implementation with minor deviations from the official defaults (mask ratio, L2 vs L1 loss, patch edge bias). These do not break the algorithm but may affect convergence speed and robustness to outlier pixels.
 
-`denoise_PN2V_multi.py` has two critical gaps relative to the published PN2V algorithm: (1) the network produces a single scalar per pixel rather than a sample distribution, and (2) inference returns the raw network output rather than the MMSE posterior mean. The result is that the trained GMM noise model influences training but is **completely bypassed at inference time** — the denoising quality falls back to N2V-level rather than delivering the probabilistic improvement that PN2V promises. The GMM parameterization (vs. the official histogram) is a valid engineering choice for physically-motivated SEM noise but loses flexibility.
+`denoise_N2V_GMM_multi.py` has two critical gaps relative to the published PN2V algorithm: (1) the network produces a single scalar per pixel rather than a sample distribution, and (2) inference returns the raw network output rather than the MMSE posterior mean. The result is that the trained GMM noise model influences training but is **completely bypassed at inference time** — the denoising quality falls back to N2V-level rather than delivering the probabilistic improvement that PN2V promises. The GMM parameterization (vs. the official histogram) is a valid engineering choice for physically-motivated SEM noise but loses flexibility.

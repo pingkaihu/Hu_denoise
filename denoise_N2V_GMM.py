@@ -1,50 +1,70 @@
 # ============================================================
-# SEM Image Denoising — Probabilistic Noise2Void (pure PyTorch)
+# SEM Image Denoising — N2V with Parametric GMM Noise Model
 # ============================================================
-# Based on: Krull et al., "Probabilistic Noise2Void" (2020)
+#
+# Academic context — position in the PN2V / PPN2V family:
+# ─────────────────────────────────────────────────────────
+# N2V (Krull et al., CVPR 2019):
+#   Blind-spot masking + MSE loss. No noise model; network predicts a
+#   single scalar per pixel. Noise distribution is implicitly averaged.
+#
+# PN2V (Krull et al., Frontiers Comput. Sci. 2020):
+#   Adds a NON-PARAMETRIC 2D histogram noise model p(y|s) (256×256 bins).
+#   The UNet outputs 800 posterior signal samples per pixel; inference
+#   computes the MMSE posterior mean ŝ = Σ_k p(y|s_k)·s_k / Σ_k p(y|s_k).
+#
+# PPN2V — Parametric variant (same paper):
+#   Replaces the histogram with a PARAMETRIC GMM:
+#       μ_k(s) = s + offset_k
+#       σ²_k(s) = exp(a_k·s + b_k)        (signal-dependent log-linear)
+#   Retains K-sample UNet output head and MMSE posterior inference.
+#   Bootstrap: N2V pre-trains the UNet, then joint GMM+UNet refinement.
+#   denoise_PPN2V_juglab.py implements this faithfully.
+#
+# This script (N2V_GMM) — engineering simplification of PPN2V:
+#   ✓ Same parametric GMM noise model as PPN2V (signal-dependent Gaussians)
+#   ✓ Joint NLL training: loss = -log p_GMM(y_obs | s_pred)
+#   ✗ UNet output: single scalar (NOT K posterior samples)
+#   ✗ Inference: raw UNet scalar (NOT MMSE posterior mean)
+#   ✗ No N2V bootstrap phase; GMM pre-trained then co-trained from scratch
+#
+#   The GMM shapes the loss landscape and regularises training toward
+#   physically plausible signal estimates, but is bypassed at inference —
+#   the scalar UNet output IS the final denoised estimate.
+#   For full PPN2V posterior quality, use denoise_PPN2V_juglab.py instead.
+#
+# References:
+#   Krull et al. (2019). Noise2Void — Learning denoising from single noisy
+#       images. CVPR 2019.
+#   Krull et al. (2020). Probabilistic Noise2Void: Unsupervised content-aware
+#       denoising. Frontiers in Computer Science, 3, 575267.
 #
 # Differences from denoise_N2V.py:
 #   + GMMNoiseModel   signal-dependent Gaussian mixture p(y|s)
 #   + NLL loss        -log p(y_obs | s_pred) replaces MSE
 #   + pretrain_gmm    fits GMM from neighbor pixel pairs before main training
 #
-# Identical to denoise_N2V.py:
-#   = N2VUNet         architecture unchanged
-#   = N2VDataset      blind-spot masking unchanged
-#   = predict_tiled   batched tiled inference unchanged
-#
 # Why no GAT pre-processing:
 #   The GMM directly models the raw Poisson-Gamma noise distribution.
-#   Applying GAT first would require PN2V to model GAT's residual error
+#   Applying GAT first would require the GMM to model GAT's residual error
 #   rather than the original physics, which is mathematically redundant.
 #
-# Differences from the official PN2V (Krull et al., 2020):
-# ─────────────────────────────────────────────────────────
-# Aspect            │ Official PN2V                  │ This implementation
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Noise model       │ Non-parametric 2D histogram    │ Parametric GMM:
-#                   │ (256×256 bins, no distribu-    │   μ_k(s) = s + offset_k
-#                   │ tional form assumed)            │   σ²_k(s) = exp(a_k·s + b_k)
-#                   │                                │ Poisson+Gaussian motivated;
-#                   │                                │ K fixed by --n_gaussians.
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Network output    │ K=800 samples {s_k} from       │ Single scalar per pixel.
-#                   │ posterior p(s | context)        │ Full K-sample output requires
-#                   │                                │ UNet head redesign.
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Inference         │ MMSE posterior mean            │ Raw UNet output (default).
-#                   │ ŝ = Σ p(y|s_k)·s_k / Σp(y|s_k)│ --use_mmse flag exists but is
-#                   │ using K=800 forward passes     │ experimental; see
-#                   │                                │ _apply_mmse_tile docstring.
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# K selection       │ Not applicable (non-parametric)│ Manual --n_gaussians flag.
-#                   │                                │ Use denoise_PN2V_bic.py for
-#                   │                                │ automatic BIC-based selection.
+# Position table vs. related scripts:
+# ──────────────────────────────────────────────────────────────────────────
+# Script                      │ Noise model        │ Output     │ Inference
+# ────────────────────────────┼────────────────────┼────────────┼──────────
+# denoise_N2V_test.py         │ implicit (MSE)     │ scalar     │ raw UNet
+# denoise_N2V_GMM.py   ← here│ parametric GMM     │ scalar     │ raw UNet
+# denoise_N2V_GMM_bic.py      │ parametric GMM+BIC │ scalar     │ raw UNet
+# denoise_PN2V_juglab.py      │ non-param histogram│ 800 samp.  │ MMSE
+# denoise_PPN2V_juglab.py     │ parametric GMM     │ K samples  │ MMSE
 #
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
 # Usage:
-#   python test_sem.py      # generate synthetic test image (if needed)
-#   python denoise_PN2V.py  # train + denoise -> data/denoised_sem_PN2V.tif
+#   python test_sem.py          # generate synthetic test image (if needed)
+#   python denoise_N2V_GMM.py   # train + denoise -> data/denoised_sem_PN2V.tif
+#   python denoise_N2V_GMM.py --n_gaussians 5   # override GMM component count
+#   python denoise_N2V_GMM_bic.py               # auto BIC component selection
 # ============================================================
 
 import math

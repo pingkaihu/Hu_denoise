@@ -1,72 +1,59 @@
 # ============================================================
-# SEM Image Denoising — Probabilistic Noise2Void, Multi-Image (pure PyTorch)
+# SEM Image Denoising — N2V with Parametric GMM Noise Model, Multi-Image
 # ============================================================
-# Based on: Krull et al., "Probabilistic Noise2Void" (2020)
 #
-# Extends denoise_PN2V.py to train ONE shared UNet + ONE shared GMM noise model
-# on a collection of images acquired under similar SEM conditions, then denoise
-# every image with the same model.
+# Academic context — position in the PN2V / PPN2V family:
+# ─────────────────────────────────────────────────────────
+# See denoise_N2V_GMM.py for the full academic context. In brief:
 #
-# Key design decisions vs. denoise_PN2V.py:
-#   + Shared GMM     one noise model trained from all images' pixel pairs —
-#                    more statistical support; assumes homogeneous noise across images
-#   + MultiImage dataset  patches drawn uniformly across all training images
-#   + pretrain_gmm_multi  pools (y, s_proxy) pairs from ALL training images
-#   + argparse CLI   mirrors denoise_N2V_multi.py interface
-#   + save/load      checkpoint dict stores both UNet and GMM states
+# This script extends denoise_N2V_GMM.py (single-image) to a multi-image
+# setting. It is an engineering simplification of PPN2V (Krull et al., 2020):
+#   ✓ Same parametric GMM noise model as PPN2V (signal-dependent Gaussians)
+#   ✓ Joint NLL training: loss = -log p_GMM(y_obs | s_pred)
+#   ✓ Multi-image: one shared UNet + one shared GMM trained on all images
+#   ✗ UNet output: single scalar per pixel (NOT K posterior samples)
+#   ✗ Inference: raw UNet scalar (NOT MMSE posterior mean)
+#   ✗ No N2V bootstrap phase
 #
-# When NOT to use this script:
-#   If images were acquired under substantially different conditions (beam energy,
-#   magnification, dose), noise statistics will differ and a shared GMM may average
-#   out signal-dependent variance incorrectly — use denoise_PN2V.py per image instead.
+#   The shared GMM assumes homogeneous noise statistics across images
+#   (same SEM beam energy, magnification, dose). If acquisition conditions
+#   vary substantially, use denoise_N2V_GMM.py per image instead.
 #
-# Differences from denoise_PN2V.py:
+# References:
+#   Krull et al. (2019). Noise2Void — CVPR 2019.
+#   Krull et al. (2020). Probabilistic Noise2Void. Frontiers Comput. Sci. 3, 575267.
+#
+# Differences from denoise_N2V_GMM.py (single-image):
 #   + MultiImagePN2VDataset: patches pooled across all training images
 #   + pretrain_gmm_multi: GMM fitted on pixel pairs from ALL images
 #   + --save_model / --load_model checkpoint stores UNet + GMM states
 #   + Per-image output PNG ({stem}_comparison.png)
 #
-# Identical to denoise_PN2V.py:
-#   = GMMNoiseModel, NLL loss formulation
-#   = DoubleConvBlock, N2VUNet, load_sem_image
-#   = Vectorized blind-spot masking, batched tiled inference
+# When NOT to use this script:
+#   If images were acquired under substantially different conditions (beam energy,
+#   magnification, dose), noise statistics will differ and a shared GMM will average
+#   out signal-dependent variance incorrectly — use denoise_N2V_GMM.py per image.
 #
-# Differences from the official PN2V (Krull et al., 2020):
-# ─────────────────────────────────────────────────────────
-# Aspect            │ Official PN2V                  │ This implementation
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Noise model       │ Non-parametric 2D histogram    │ Parametric GMM with signal-
-#                   │ (256×256 bins, no functional   │ dependent mean and log-linear
-#                   │ form assumed)                  │ variance. K fixed by
-#                   │                                │ --n_gaussians.
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Multi-image       │ Not described (single-image    │ Shared GMM fitted on pooled
-# extension         │ paper)                         │ pixel pairs from all images.
-#                   │                                │ Valid when noise statistics
-#                   │                                │ are homogeneous across images.
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Network output    │ K=800 samples from posterior   │ Single scalar per pixel.
-#                   │                                │ K-sample output not implemented.
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Inference         │ MMSE posterior mean            │ Raw UNet output (default).
-#                   │ (800 forward passes)           │ --use_mmse flag is experimental.
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# K selection       │ Not applicable (non-parametric)│ Manual --n_gaussians flag.
-#                   │                                │ Use denoise_PN2V_bic_multi.py
-#                   │                                │ for automatic BIC selection.
+# Position table vs. related scripts:
+# ──────────────────────────────────────────────────────────────────────────
+# Script                          │ Noise model        │ Output    │ Inference
+# ────────────────────────────────┼────────────────────┼───────────┼──────────
+# denoise_N2V_GMM.py              │ parametric GMM     │ scalar    │ raw UNet
+# denoise_N2V_GMM_multi.py ←here │ parametric GMM     │ scalar    │ raw UNet
+# denoise_N2V_GMM_bic_multi.py   │ parametric GMM+BIC │ scalar    │ raw UNet
+# denoise_PPN2V_juglab_multi.py  │ parametric GMM     │ K samples │ MMSE
 #
-
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy
-#
 # Usage:
-#   python denoise_PN2V_multi.py --input_dir ./sem_images --output_dir ./denoised
-#   python denoise_PN2V_multi.py --input_dir ./sem_images --output_dir ./denoised \
-#                                --epochs 100 --n_gaussians 3
-#
+#   python denoise_N2V_GMM_multi.py --input_dir ./sem_images --output_dir ./denoised
+#   python denoise_N2V_GMM_multi.py --input_dir ./sem_images --output_dir ./denoised \
+#                                   --epochs 100 --n_gaussians 3
+#   python denoise_N2V_GMM_bic_multi.py --input_dir ./sem_images --output_dir ./denoised
+# ============================================================
 #   # Train on representative images, save checkpoint, denoise all later:
-#   python denoise_PN2V_multi.py --input_dir ./train_imgs --output_dir ./denoised \
+#   python denoise_N2V_GMM_multi.py --input_dir ./train_imgs --output_dir ./denoised \
 #                                --save_model sem_pn2v.pt
-#   python denoise_PN2V_multi.py --input_dir ./all_imgs   --output_dir ./denoised \
+#   python denoise_N2V_GMM_multi.py --input_dir ./all_imgs   --output_dir ./denoised \
 #                                --load_model sem_pn2v.pt
 # ============================================================
 
@@ -123,7 +110,7 @@ def find_images(directory: str) -> List[Path]:
 
 
 # ============================================================
-# 2. UNet Architecture  (identical to denoise_PN2V.py)
+# 2. UNet Architecture  (identical to denoise_N2V_GMM.py)
 # ============================================================
 
 class DoubleConvBlock(nn.Module):
@@ -183,7 +170,7 @@ class N2VUNet(nn.Module):
 
 
 # ============================================================
-# 3. GMM Noise Model  (identical to denoise_PN2V.py)
+# 3. GMM Noise Model  (identical to denoise_N2V_GMM.py)
 # ============================================================
 
 class GMMNoiseModel(nn.Module):

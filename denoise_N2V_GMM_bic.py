@@ -1,65 +1,61 @@
 # ============================================================
-# SEM Image Denoising — PN2V with BIC Automatic GMM Capacity Selection
+# SEM Image Denoising — N2V with Parametric GMM + BIC Component Selection
 # ============================================================
-# Based on: Krull et al., "Probabilistic Noise2Void: Unsupervised
-#           Content-Aware Denoising without Ground Truth."
-#           Frontiers in Computer Science, 2020.
 #
-# BIC model selection references:
-#   Schwarz, G. (1978). Estimating the dimension of a model.
-#       Annals of Statistics, 6(2), 461–464.
-#       — Original derivation of the Bayesian Information Criterion (BIC).
-#   McLachlan, G. J., & Peel, D. (2000). Finite Mixture Models. Wiley.
-#       — Standard reference for BIC-based GMM component selection.
-#   Pedregosa et al. (2011). Scikit-learn: Machine Learning in Python.
-#       Journal of Machine Learning Research, 12, 2825–2830.
-#       — sklearn.mixture.GaussianMixture used for BIC evaluation.
+# Academic context — position in the PN2V / PPN2V family:
+# ─────────────────────────────────────────────────────────
+# See denoise_N2V_GMM.py for the full academic context. In brief:
+# This script is denoise_N2V_GMM.py with automatic BIC selection of the
+# GMM component count — an engineering addition not in the original papers.
 #
-# Method note:
-#   BIC-based GMM capacity selection is a classical statistical technique
+# Relationship to official methods:
+#   ✓ Same parametric GMM noise model form as PPN2V (Krull et al., 2020)
+#   ✓ Joint NLL training: loss = -log p_GMM(y_obs | s_pred)
+#   ✓ BIC selects n_components from --gmm_candidates before training
+#   ✗ UNet output: single scalar per pixel (NOT K posterior samples)
+#   ✗ Inference: raw UNet scalar (NOT MMSE posterior mean)
+#
+#   BIC-based GMM component selection is a classical statistical technique
 #   (Schwarz 1978; McLachlan & Peel 2000) applied here as an engineering
-#   adaptation. It is NOT described in the original PN2V paper, which uses
-#   a non-parametric histogram noise model that has no hyperparameter K.
-#   This script uses BIC to automate the selection of K when a parametric
-#   GMM is preferred over the histogram (e.g. for interpretability or when
-#   the noise is known to be Poisson + Gaussian read noise).
+#   addition. It is NOT described in any PN2V / PPN2V paper.
 #
 # How BIC selection works:
 #   1. Build (signal_proxy, observation) pixel pairs from the image.
 #   2. For each n_comp in --gmm_candidates, fit a sklearn GaussianMixture on
 #      the 2D (s_proxy, y) space and compute BIC = n_params·ln(n) − 2·ln(L).
 #   3. Select the n_comp with the lowest BIC.
-#   4. Train the full PN2V pipeline with that n_components.
+#   4. Train the N2V_GMM pipeline with that n_components.
 #
-# When to use this script vs. denoise_PN2V.py:
+# When to use this script vs. denoise_N2V_GMM.py:
 #   Use this script when:
 #   - ENL < 3 (strong speckle): default n_components=3 may underfit the heavy tail.
 #   - You want automatic n_components tuning without manual trial and error.
-#   Use denoise_PN2V.py directly when:
-#   - You already know n_components from domain knowledge (e.g. 2 for pure Poisson+Gaussian).
+#   Use denoise_N2V_GMM.py directly when:
+#   - You already know n_components from domain knowledge (e.g. 2 for Poisson+Gaussian).
 #   - Training speed is critical and you want to skip BIC evaluation.
 #
-# Differences from the official PN2V (Krull et al., 2020):
-# ─────────────────────────────────────────────────────────
-# Aspect            │ Official PN2V                  │ This implementation
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Noise model       │ Non-parametric 2D histogram    │ Parametric GMM (auto n_components
-#                   │ (no component count to choose) │ via BIC)
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Network output    │ 800 posterior samples/pixel    │ Single scalar per pixel.
-#                   │ (K=800 output channels; K here │
-#                   │ = posterior samples, unrelated │
-#                   │ to GMM components)             │
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Inference         │ MMSE posterior mean            │ Raw UNet output (default).
-#                   │ (800 forward passes)           │ --use_mmse is experimental.
+# References:
+#   Krull et al. (2020). Probabilistic Noise2Void. Frontiers Comput. Sci. 3, 575267.
+#   Schwarz, G. (1978). Estimating the dimension of a model.
+#       Annals of Statistics, 6(2), 461–464.
+#   McLachlan, G. J., & Peel, D. (2000). Finite Mixture Models. Wiley.
+#   Pedregosa et al. (2011). Scikit-learn. JMLR, 12, 2825–2830.
+#
+# Position table vs. related scripts:
+# ──────────────────────────────────────────────────────────────────────────
+# Script                      │ Noise model        │ Output     │ Inference
+# ────────────────────────────┼────────────────────┼────────────┼──────────
+# denoise_N2V_GMM.py          │ parametric GMM     │ scalar     │ raw UNet
+# denoise_N2V_GMM_bic.py ←here│ parametric GMM+BIC │ scalar     │ raw UNet
+# denoise_PN2V_juglab.py      │ non-param histogram│ 800 samp.  │ MMSE
+# denoise_PPN2V_juglab.py     │ parametric GMM     │ K samples  │ MMSE
 #
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy  scikit-learn
 # Usage:
-#   python test_sem.py          # generate synthetic test image (if needed)
-#   python denoise_PN2V_bic.py  # BIC selects n_components, then trains + denoises
-#   python denoise_PN2V_bic.py --gmm_candidates 2 3 5  # custom candidates
-#   python denoise_PN2V_bic.py --n_gaussians 3          # skip BIC, use 3 components
+#   python test_sem.py              # generate synthetic test image (if needed)
+#   python denoise_N2V_GMM_bic.py  # BIC selects n_components, then trains + denoises
+#   python denoise_N2V_GMM_bic.py --gmm_candidates 2 3 5  # custom candidates
+#   python denoise_N2V_GMM_bic.py --n_gaussians 3          # skip BIC, use 3 components
 # ============================================================
 
 import math
@@ -511,7 +507,7 @@ def _apply_mmse_tile(
 ) -> np.ndarray:
     """
     MMSE posterior mean correction (experimental).
-    See denoise_PN2V.py _apply_mmse_tile docstring for important limitations.
+    See denoise_N2V_GMM.py _apply_mmse_tile docstring for important limitations.
     """
     if device is None:
         device = next(noise_model.parameters()).device

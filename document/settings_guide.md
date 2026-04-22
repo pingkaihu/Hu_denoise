@@ -1,7 +1,7 @@
 # 參數設定指南
 
 **環境假設：** NVIDIA RTX 3080 (10 GB VRAM)，Windows，Python 3.12  
-**適用腳本：** `denoise_N2V.py`、`denoise_log_N2V.py`、`denoise_N2V_multi.py`、`denoise_log_N2V_multi.py`、`denoise_PN2V.py`、`denoise_PN2V_multi.py`、`denoise_PN2V_juglab.py`、`denoise_PN2V_juglab_multi.py`、`denoise_apbsn.py`、`denoise_apbsn_multi.py`、`denoise_apbsn_faithful.py`、`denoise_apbsn_faithful_multi.py`、`denoise_GR2R.py`、`denoise_GR2R_multi.py`、`denoise_DIP.py`
+**適用腳本：** `denoise_N2V.py`、`denoise_log_N2V.py`、`denoise_N2V_multi.py`、`denoise_log_N2V_multi.py`、`denoise_N2V_GMM.py`、`denoise_N2V_GMM_multi.py`、`denoise_PN2V_juglab.py`、`denoise_PN2V_juglab_multi.py`、`denoise_apbsn.py`、`denoise_apbsn_multi.py`、`denoise_apbsn_faithful.py`、`denoise_apbsn_faithful_multi.py`、`denoise_GR2R.py`、`denoise_GR2R_multi.py`、`denoise_DIP.py`
 
 > **時間估計說明：** 以 RTX 3080 實測為基準，`num_workers=0`。  
 > 首次執行因 CUDA kernel 編譯會額外多 1–2 分鐘。  
@@ -39,7 +39,7 @@
 
 多張相似條件的影像？
   └─ 是，噪聲類型均勻  → denoise_N2V_multi.py
-  └─ 是，噪聲混合複雜  → denoise_PN2V_multi.py
+  └─ 是，噪聲混合複雜  → denoise_N2V_GMM_multi.py
   └─ 是，乘性 / 散斑   → denoise_log_N2V_multi.py
   └─ 是，未知加性噪聲  → denoise_GR2R_multi.py
   └─ 是，掃描線問題    → denoise_apbsn_multi.py（或 denoise_apbsn_faithful_multi.py 論文完整版）
@@ -53,7 +53,7 @@
   └─ 是 → denoise_log_N2V.py
 
 混合噪聲（Poisson + Gaussian + 偵測器非線性）？
-  └─ 是 → denoise_PN2V.py
+  └─ 是 → denoise_N2V_GMM.py
   └─ 否 → denoise_N2V.py（標準 SEM 均勻噪聲）
 
 想要無盲點遮蔽、完整感受野訓練？
@@ -68,8 +68,8 @@
 | `denoise_log_N2V.py` | 乘性 / 散斑噪聲 | 單張 | log 變換後轉加性噪聲 |
 | `denoise_N2V_multi.py` | 像素獨立，多圖 | 多張 | 共用模型，支援 save/load |
 | `denoise_log_N2V_multi.py` | 乘性 / 散斑，多圖 | 多張 | log 域共用模型，支援 save/load |
-| `denoise_PN2V.py` | 混合噪聲（Poisson + Gaussian） | 單張 | GMM 顯式建模噪聲分佈 |
-| `denoise_PN2V_multi.py` | 混合噪聲，多圖 | 多張 | 共用 UNet + 共用 GMM |
+| `denoise_N2V_GMM.py` | 混合噪聲（Poisson + Gaussian） | 單張 | GMM 顯式建模噪聲分佈 |
+| `denoise_N2V_GMM_multi.py` | 混合噪聲，多圖 | 多張 | 共用 UNet + 共用 GMM |
 | `denoise_apbsn.py` | 空間相關噪聲 / 掃描線 | 單張 | PD 域盲點訓練，無需 tiling |
 | `denoise_apbsn_multi.py` | 空間相關噪聲，多圖 | 多張 | 同上，支援 save/load |
 | `denoise_apbsn_faithful.py` | 真實複雜噪聲（論文完整版） | 單張 | DBSNl + L1 + 非對稱 PD + R3 |
@@ -82,7 +82,7 @@
 
 ## 快速對照表（N2V / PN2V 系列）
 
-> **適用腳本：** `denoise_N2V.py`、`denoise_log_N2V.py`、`denoise_N2V_multi.py`、`denoise_PN2V.py`、`denoise_PN2V_multi.py`  
+> **適用腳本：** `denoise_N2V.py`、`denoise_log_N2V.py`、`denoise_N2V_multi.py`、`denoise_N2V_GMM.py`、`denoise_N2V_GMM_multi.py`  
 > AP-BSN、GR2R、DIP 請見各自章節。
 
 | 影像大小 | `patch_size` | `batch_size` | `epochs` | `tile_size` | `tile_overlap` | 訓練時間（GPU） | 推論時間（GPU） |
@@ -146,7 +146,7 @@ python denoise_log_N2V.py --input data/test_sem.tif --epochs 100 --patch_size 64
 
 **注意事項：**
 - 輸入影像中若有 0 值像素，`log1p` 會將其映射至 0，不影響結果
-- 若影像同時包含乘性與加性噪聲，log 轉換可能欠補償加性成分 — 改用 `denoise_PN2V.py`
+- 若影像同時包含乘性與加性噪聲，log 轉換可能欠補償加性成分 — 改用 `denoise_N2V_GMM.py`
 
 ---
 
@@ -216,13 +216,13 @@ N2V 假設噪聲 MSE 可接受；**PN2V** 改以 **GMM（高斯混合模型）**
 
 ---
 
-### `denoise_PN2V.py`（單張，混合噪聲）
+### `denoise_N2V_GMM.py`（單張，混合噪聲）
 
 ```bash
-python denoise_PN2V.py --input data/test_sem.tif
+python denoise_N2V_GMM.py --input data/test_sem.tif
 
 # 高噪聲影像，增強 GMM 容量
-python denoise_PN2V.py --input data/test_sem.tif --n_gaussians 5 --gmm_pretrain_epochs 500
+python denoise_N2V_GMM.py --input data/test_sem.tif --n_gaussians 5 --gmm_pretrain_epochs 500
 ```
 
 #### PN2V 專屬核心參數
@@ -248,19 +248,19 @@ python denoise_PN2V.py --input data/test_sem.tif --n_gaussians 5 --gmm_pretrain_
 
 ---
 
-### `denoise_PN2V_multi.py`（多張，混合噪聲）
+### `denoise_N2V_GMM_multi.py`（多張，混合噪聲）
 
 **何時使用：** 多張影像且懷疑存在混合噪聲；多圖像共用 UNet 與 GMM，噪聲統計更豐富。
 
 ```bash
-python denoise_PN2V_multi.py --input_dir ./sem_images --output_dir ./denoised
+python denoise_N2V_GMM_multi.py --input_dir ./sem_images --output_dir ./denoised
 
 # 指定獨立訓練集
-python denoise_PN2V_multi.py --train_dir ./reference_imgs --input_dir ./target_imgs --output_dir ./denoised
+python denoise_N2V_GMM_multi.py --train_dir ./reference_imgs --input_dir ./target_imgs --output_dir ./denoised
 
 # 儲存 / 載入
-python denoise_PN2V_multi.py --input_dir ./sem_images --save_model pn2v_model.pt
-python denoise_PN2V_multi.py --input_dir ./new_imgs --load_model pn2v_model.pt
+python denoise_N2V_GMM_multi.py --input_dir ./sem_images --save_model pn2v_model.pt
+python denoise_N2V_GMM_multi.py --input_dir ./new_imgs --load_model pn2v_model.pt
 ```
 
 | 參數 | 說明 |
@@ -286,9 +286,9 @@ python denoise_PN2V_juglab.py --input data/test_sem.tif
 python denoise_PN2V_juglab.py --input data/test_sem.tif --calib_dir ./sem_images
 ```
 
-#### 與 `denoise_PN2V.py` 的主要差異
+#### 與 `denoise_N2V_GMM.py` 的主要差異
 
-| 面向 | `denoise_PN2V.py` | `denoise_PN2V_juglab.py` |
+| 面向 | `denoise_N2V_GMM.py` | `denoise_PN2V_juglab.py` |
 |---|---|---|
 | 噪聲模型 | Parametric GMM（K 個高斯） | Non-parametric 2D histogram（256×256 bins） |
 | UNet 輸出 | 1 scalar / pixel | K=800 samples / pixel |

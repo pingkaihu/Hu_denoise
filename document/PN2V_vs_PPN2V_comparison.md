@@ -95,7 +95,7 @@ where:
   σ²_k(s) = exp( Σ_j c_kj · s^j )          # log-linear variance (captures Poisson scaling)
 ```
 
-Simplified implementation (as in `denoise_PN2V.py` / `GMMNoiseModel`):
+Simplified implementation (as in `denoise_N2V_GMM.py` / `GMMNoiseModel`):
 
 ```python
 # Signal-dependent GMM — simplified version (degree-1 polynomial)
@@ -242,11 +242,11 @@ dataset-dependent — histogram wins on some datasets, GMM on others.
 
 ---
 
-## 5. Detailed Analysis of `denoise_PN2V.py` vs Official PPN2V
+## 5. Detailed Analysis of `denoise_N2V_GMM.py` vs Official PPN2V
 
-File: [denoise_PN2V.py](../denoise_PN2V.py)
+File: [denoise_N2V_GMM.py](../denoise_N2V_GMM.py)
 
-**Overall verdict:** `denoise_PN2V.py` is closest to **PPN2V Boot GMM** (same noise model family, same
+**Overall verdict:** `denoise_N2V_GMM.py` is closest to **PPN2V Boot GMM** (same noise model family, same
 self-calibration philosophy), but is missing the three features that make PPN2V probabilistic. It has
 six concrete divergences from the official implementation. Some are deliberate simplifications with
 practical benefits; others are genuine capability losses.
@@ -255,7 +255,7 @@ practical benefits; others are genuine capability losses.
 
 ### Divergence 1 — Network Output: 1 Channel vs K=800 Channels
 
-| | Official PPN2V | `denoise_PN2V.py` |
+| | Official PPN2V | `denoise_N2V_GMM.py` |
 |---|---|---|
 | UNet head | `Conv2d(f, 800, kernel_size=1)` → `(B, 800, H, W)` | `Conv2d(f, 1, kernel_size=1)` → `(B, 1, H, W)` |
 | Interpretation | 800 samples from the prior `p(s \| context)` | Single point estimate of `s` |
@@ -268,7 +268,7 @@ pred = model(noisy_in)     # (B, 800, H, W)
 # Each channel k = one hypothesis for the true signal
 ```
 
-**`denoise_PN2V.py`:**
+**`denoise_N2V_GMM.py`:**
 ```python
 # Final head produces 1 scalar per pixel (line 134)
 self.head = nn.Conv2d(f, in_channels, kernel_size=1)
@@ -297,7 +297,7 @@ pred = model(noisy_in)     # (B, 1, H, W)
 
 ### Divergence 2 — Training Loss: Direct NLL vs Log-Evidence
 
-| | Official PPN2V | `denoise_PN2V.py` |
+| | Official PPN2V | `denoise_N2V_GMM.py` |
 |---|---|---|
 | Loss | `−log((1/K) Σ_k p(y\|s_k))` = log-evidence | `−log p_GMM(y\|s_pred)` = direct NLL |
 
@@ -309,7 +309,7 @@ log_ev   = torch.logsumexp(log_liks, dim=1) - math.log(K)
 loss     = -log_ev.mean()
 ```
 
-**`denoise_PN2V.py` (line 525):**
+**`denoise_N2V_GMM.py` (line 525):**
 ```python
 # Direct negative log-likelihood of single prediction
 loss = noise_model.nll_loss(y_obs, s_pred)        # = -log p_GMM(y|s_pred).mean()
@@ -336,7 +336,7 @@ different inductive biases.
 
 ### Divergence 3 — Mixture Weights: Constant vs Signal-Dependent
 
-| | Official PPN2V | `denoise_PN2V.py` |
+| | Official PPN2V | `denoise_N2V_GMM.py` |
 |---|---|---|
 | α_k(s) | `softmax(polynomial(s))` — weights vary with signal | `softmax(log_weights)` — **constant** for all s |
 
@@ -346,7 +346,7 @@ different inductive biases.
 alpha = softmax(W_alpha @ poly_features(s), dim=-1)  # (N, K_gmm)
 ```
 
-**`denoise_PN2V.py` (lines 236–237):**
+**`denoise_N2V_GMM.py` (lines 236–237):**
 ```python
 log_w = F.log_softmax(self.log_weights, dim=0)  # (K,) — same weights for all s values
 mu    = s + self.mean_offsets                    # (N, K) — means DO depend on s
@@ -371,7 +371,7 @@ mu    = s + self.mean_offsets                    # (N, K) — means DO depend on
 
 ### Divergence 4 — GMM Training: Joint Fine-Tuning vs Frozen After Calibration
 
-| | Official PPN2V | `denoise_PN2V.py` |
+| | Official PPN2V | `denoise_N2V_GMM.py` |
 |---|---|---|
 | GMM during network training | **Frozen** — fitted once, then fixed | **Co-trained** at 0.1× lr (`gmm_lr_scale=0.1`) |
 
@@ -388,7 +388,7 @@ for epoch in range(n_epochs):
     # Only network.parameters() receive gradients
 ```
 
-**`denoise_PN2V.py` (lines 489–493, 505):**
+**`denoise_N2V_GMM.py` (lines 489–493, 505):**
 ```python
 # Both UNet AND GMM parameters are optimised simultaneously
 optimizer = optim.Adam([
@@ -418,7 +418,7 @@ optimizer = optim.Adam([
 
 ### Divergence 5 — GMM Calibration Source: 4-Neighbor Mean vs N2V Pseudo-Clean
 
-| | Official PPN2V Boot GMM | `denoise_PN2V.py` |
+| | Official PPN2V Boot GMM | `denoise_N2V_GMM.py` |
 |---|---|---|
 | Signal proxy for GMM fitting | N2V output (denoised image, run first) | 4-neighbor mean of noisy image |
 | Training cost | 2 training phases (N2V + PN2V) | 1 training phase (GMM pretrain + joint) |
@@ -433,7 +433,7 @@ pseudo_clean = n2v_model.predict(noisy_image)   # denoised — much better signa
 gmm.fit_mle(s=pseudo_clean.flatten(), y=noisy.flatten())
 ```
 
-**`denoise_PN2V.py` (lines 400–415):**
+**`denoise_N2V_GMM.py` (lines 400–415):**
 ```python
 # 4-neighbor mean as signal proxy — no separate N2V run
 kernel = torch.zeros(1, 1, 3, 3)
@@ -461,7 +461,7 @@ s_proxy = F.conv2d(img_t, kernel, padding=1).squeeze()   # (H, W)
 
 ### Divergence 6 — Inference: Raw Scalar vs MMSE Posterior Mean
 
-| | Official PPN2V | `denoise_PN2V.py` |
+| | Official PPN2V | `denoise_N2V_GMM.py` |
 |---|---|---|
 | Inference output | MMSE: `Σ_k p(y\|s_k)·s_k / Σ_k p(y\|s_k)` | Raw UNet scalar (default) |
 | MMSE available | Yes — 800 posterior samples feed directly | `--use_mmse` flag → **broken** (see below) |
@@ -474,7 +474,7 @@ weights = torch.softmax(log_w, dim=1)      # importance weights
 mmse    = (weights * pred).sum(dim=1)      # (B, H, W) — posterior mean
 ```
 
-**`denoise_PN2V.py` (line 693):**
+**`denoise_N2V_GMM.py` (line 693):**
 ```python
 preds = model(batch_t).squeeze(1).cpu().numpy()   # (B, H, W) — raw scalar, no weighting
 ```
@@ -525,7 +525,7 @@ observation — producing `s_mmse ≈ y_obs` (the original noisy image with no d
 | Broken MMSE inference | Bug (given K=1) | Medium | `--use_mmse` worsens output; raw scalar is fine |
 | No signal-dependent weights | Simplification | Low | Minor expressivity loss; simpler, more stable |
 
-**Summary sentence:** `denoise_PN2V.py` trades the full probabilistic machinery of PPN2V for a much
+**Summary sentence:** `denoise_N2V_GMM.py` trades the full probabilistic machinery of PPN2V for a much
 simpler, memory-efficient, single-pass implementation that produces a deterministic point estimate
 rather than a posterior distribution. For pure denoising quality the trade-off is reasonable; for
 uncertainty quantification or rigorous Bayesian inference it is inadequate.
@@ -534,7 +534,7 @@ uncertainty quantification or rigorous Bayesian inference it is inadequate.
 
 ### Would a PPN2V-faithful script be straightforward?
 
-Yes — `denoise_PN2V.py`'s `GMMNoiseModel` is reusable. The minimum required changes:
+Yes — `denoise_N2V_GMM.py`'s `GMMNoiseModel` is reusable. The minimum required changes:
 
 ```python
 # 1. Change UNet head: 1 → K channels

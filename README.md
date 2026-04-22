@@ -14,7 +14,7 @@ Hu_denoise/
 │
 │   # ── 去噪腳本（單張影像）──
 ├── denoise_N2V.py             # 標準單張 N2V（PyTorch 基礎版）
-├── denoise_PN2V.py            # PN2V 混合噪聲（GMM 噪聲模型）
+├── denoise_N2V_GMM.py            # PN2V 混合噪聲（GMM 噪聲模型）
 ├── denoise_log_N2V.py         # Log + N2V（Speckle 乘性噪聲）
 ├── denoise_apbsn.py           # AP-BSN（CVPR 2022，非對稱 PD）
 ├── denoise_DIP.py             # Deep Image Prior（CVPR 2018，無噪聲模型假設）
@@ -23,7 +23,7 @@ Hu_denoise/
 │   # ── 去噪腳本（多張影像）──
 ├── denoise_N2V_multi.py       # 多張影像共用 N2V 模型
 ├── denoise_log_N2V_multi.py   # 多張影像 + 乘性噪聲，log 域共用模型
-├── denoise_PN2V_multi.py      # 多張影像 + 混合噪聲，共用 GMM
+├── denoise_N2V_GMM_multi.py      # 多張影像 + 混合噪聲，共用 GMM
 ├── denoise_GR2R_multi.py      # 多張影像 GR2R（全感受野，無盲點遮蔽）
 ├── denoise_apbsn_multi.py     # AP-BSN 多張影像版
 ├── denoise_apbsn_faithful.py  # AP-BSN 論文完整版（DBSNl + R3，單張）
@@ -58,13 +58,13 @@ python denoise_N2V.py
 | 噪聲情境 | 推薦腳本 | 輸出 |
 |---|---|---|
 | 均勻顆粒噪聲（無條紋） | `denoise_N2V.py` | `data/denoised_sem_N2V.tif` |
-| 混合噪聲（Poisson + Gamma）| `denoise_PN2V.py` ✦ | `data/denoised_sem_PN2V.tif` |
-| 混合噪聲，自動選擇 GMM 容量 | `denoise_PN2V_bic.py` ✦ | `data/denoised_sem_PN2V_bic.tif` |
+| 混合噪聲（Poisson + Gamma）| `denoise_N2V_GMM.py` ✦ | `data/denoised_sem_PN2V.tif` |
+| 混合噪聲，自動選擇 GMM 容量 | `denoise_N2V_GMM_bic.py` ✦ | `data/denoised_sem_PN2V_bic.tif` |
 | Speckle / 乘性噪聲 | `denoise_log_N2V.py` | `data/denoised_sem_log_torch.tif` |
 | 多張影像，相似條件 | `denoise_N2V_multi.py` | `--output_dir` 旗標指定 |
 | 多張影像，乘性 / 散斑噪聲 | `denoise_log_N2V_multi.py` | `--output_dir` 旗標指定 |
-| 多張影像，混合噪聲 | `denoise_PN2V_multi.py` ✦ | `--output_dir` 旗標指定 |
-| 多張影像，混合噪聲，自動選擇 GMM 容量 | `denoise_PN2V_bic_multi.py` ✦ | `--output_dir` 旗標指定 |
+| 多張影像，混合噪聲 | `denoise_N2V_GMM_multi.py` ✦ | `--output_dir` 旗標指定 |
+| 多張影像，混合噪聲，自動選擇 GMM 容量 | `denoise_N2V_GMM_bic_multi.py` ✦ | `--output_dir` 旗標指定 |
 | 多張影像，未知加性噪聲（全感受野） | `denoise_GR2R_multi.py` | `--output_dir` 旗標指定 |
 | 真實世界複雜噪聲（非對稱 PD，抑制掃描格柵偽影） | `denoise_apbsn.py` | `data/denoised_apbsn.tif` |
 | 真實世界複雜噪聲（論文完整版 DBSNl + R3） | `denoise_apbsn_faithful.py` | `data/denoised_sem_apbsn_faithful.tif` |
@@ -90,8 +90,8 @@ result = bm3d.bm3d(image, sigma_psd=0.05)
 | 腳本 | 說明 |
 |---|---|
 | [denoise_N2V.py](denoise_N2V.py) | 純 PyTorch N2V 基礎版。適用一般均勻加性噪聲（高斯/泊松）。 |
-| [denoise_PN2V.py](denoise_PN2V.py) | PN2V——GMM 噪聲模型，直接對 Poisson-Gamma 混合噪聲建模；含低計數診斷。與官方的主要差異：噪聲模型使用參數化 GMM（官方為非參數直方圖）；推論輸出單一純量（官方為 K=800 樣本後驗均值）。 |
-| [denoise_PN2V_bic.py](denoise_PN2V_bic.py) | PN2V + BIC 自動選擇 GMM 容量——執行前自動評估 K ∈ {2,3,5,7} 的貝葉斯信息準則，選最低 BIC 的 K 再訓練。強 speckle（ENL < 3）時建議使用。 |
+| [denoise_N2V_GMM.py](denoise_N2V_GMM.py) | PN2V——GMM 噪聲模型，直接對 Poisson-Gamma 混合噪聲建模；含低計數診斷。與官方的主要差異：噪聲模型使用參數化 GMM（官方為非參數直方圖）；推論輸出單一純量（官方為 K=800 樣本後驗均值）。 |
+| [denoise_N2V_GMM_bic.py](denoise_N2V_GMM_bic.py) | PN2V + BIC 自動選擇 GMM 容量——執行前自動評估 K ∈ {2,3,5,7} 的貝葉斯信息準則，選最低 BIC 的 K 再訓練。強 speckle（ENL < 3）時建議使用。 |
 | [denoise_log_N2V.py](denoise_log_N2V.py) | 先用 `log1p` 將乘性 Speckle 轉為加性 AWGN，訓練後再用 `expm1` 還原。 |
 | [denoise_apbsn.py](denoise_apbsn.py) | AP-BSN（CVPR 2022）——非對稱 PD + Blind-Spot Network；SEM 用 `pd_stride=2`，相機 sRGB 用 `pd_stride=5`。 |
 | [denoise_apbsn_faithful.py](denoise_apbsn_faithful.py) | AP-BSN 論文完整版——DBSNl（CentralMaskedConv2d + 擴張分支）+ L1 全像素 loss + 非對稱 PD（pd_a 訓練 / pd_b 推論）+ R3 隨機替換細化（T=8, p=0.16）。 |
@@ -104,8 +104,8 @@ result = bm3d.bm3d(image, sigma_psd=0.05)
 |---|---|
 | [denoise_N2V_multi.py](denoise_N2V_multi.py) | 多張影像共用一個 N2V 模型（MSE loss），適用相似拍攝條件。 |
 | [denoise_log_N2V_multi.py](denoise_log_N2V_multi.py) | 多張影像 Log+N2V，log 域共用訓練；適合乘性 / 散斑噪聲多圖場景。 |
-| [denoise_PN2V_multi.py](denoise_PN2V_multi.py) | 多張影像共用 UNet + 共用 GMM；匯集所有影像的像素對，使噪聲統計更豐富。與官方差異同 denoise_PN2V.py（多張影像 shared GMM 為本專案擴展，非原論文內容）。 |
-| [denoise_PN2V_bic_multi.py](denoise_PN2V_bic_multi.py) | 多張影像 PN2V + BIC 自動選擇 GMM 容量——BIC 在匯集所有影像的像素對上評估，統計支撐更充足。 |
+| [denoise_N2V_GMM_multi.py](denoise_N2V_GMM_multi.py) | 多張影像共用 UNet + 共用 GMM；匯集所有影像的像素對，使噪聲統計更豐富。與官方差異同 denoise_N2V_GMM.py（多張影像 shared GMM 為本專案擴展，非原論文內容）。 |
+| [denoise_N2V_GMM_bic_multi.py](denoise_N2V_GMM_bic_multi.py) | 多張影像 PN2V + BIC 自動選擇 GMM 容量——BIC 在匯集所有影像的像素對上評估，統計支撐更充足。 |
 | [denoise_GR2R_multi.py](denoise_GR2R_multi.py) | 多張影像 GR2R；無盲點遮蔽，全感受野；各圖自動估計 σ 後取均值作再污染強度。 |
 | [denoise_apbsn_multi.py](denoise_apbsn_multi.py) | AP-BSN 多張影像版。 |
 | [denoise_apbsn_faithful_multi.py](denoise_apbsn_faithful_multi.py) | AP-BSN 論文完整版多張影像——共用一個 DBSNl 模型訓練所有影像；R3 逐圖套用；支援 `--train_dir` / `--save_model` / `--load_model`。 |
@@ -113,7 +113,7 @@ result = bm3d.bm3d(image, sigma_psd=0.05)
 ```bash
 # 多張影像去噪（N2V 或 PN2V 皆同介面）
 python denoise_N2V_multi.py --input_dir ./sem_images --output_dir ./denoised
-python denoise_PN2V_multi.py --input_dir ./sem_images --output_dir ./denoised
+python denoise_N2V_GMM_multi.py --input_dir ./sem_images --output_dir ./denoised
 ```
 
 ### 工具腳本
@@ -167,7 +167,7 @@ python convert_to_tif.py my_image.jpg --keep-color --output data/
 pip install torch tifffile matplotlib numpy
 
 # 選用套件
-pip install scikit-learn  # denoise_PN2V_bic.py / denoise_PN2V_bic_multi.py 的 BIC 選擇
+pip install scikit-learn  # denoise_N2V_GMM_bic.py / denoise_N2V_GMM_bic_multi.py 的 BIC 選擇
 pip install bm3d          # BM3D 基準線評估
 pip install careamics     # 舊版 CAREamics 腳本用
 

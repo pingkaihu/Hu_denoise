@@ -352,7 +352,7 @@ gamma_nll = (1 - L) * torch.log(ratio + eps) + L * ratio
 #### A3. PN2V 的 num_gaussians 診斷工具
 
 **影響：** 強 speckle（ENL < 3）場景的 GMM 擬合品質  
-**工作量：** 在 `denoise_PN2V.py` 加入 GMM log-likelihood 評估，
+**工作量：** 在 `denoise_N2V_GMM.py` 加入 GMM log-likelihood 評估，
 比較 `num_gaussians=3, 5, 7` 的 BIC（貝葉斯信息準則）
 
 ```python

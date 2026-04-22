@@ -45,11 +45,13 @@ Scripts read `.tif`/`.tiff`/`.png` from the working directory and write outputs 
 - `denoise_N2V_careamics.py` with `struct_n2v_axis="horizontal"` or `"vertical"`
 
 ### Mixed noise (Poisson + Gamma)
-- **Auto GMM capacity (BIC)** — `denoise_PN2V_bic.py` (recommended when ENL < 3; needs `scikit-learn`) → `data/denoised_sem_PN2V_bic.tif`
-  - Multi: `denoise_PN2V_bic_multi.py`
+- **N2V + GMM noise model, auto BIC (recommended)** — `denoise_N2V_GMM_bic.py` (needs `scikit-learn`; uses PPN2V's parametric GMM but with scalar output; BIC auto-selects n_components) → `data/denoised_sem_PN2V_bic.tif`
+  - Multi: `denoise_N2V_GMM_bic_multi.py`
+- **N2V + GMM noise model, manual n_components** — `denoise_N2V_GMM.py` (same as above but you specify `--n_gaussians` directly; faster when n_components is known) → `data/denoised_sem_PN2V.tif`
+  - Multi: `denoise_N2V_GMM_multi.py`
 - **Paper-faithful PN2V** (non-parametric histogram 256×256, K=800 MMSE) — `denoise_PN2V_juglab.py` (`--calib_dir` for external calib; `--K` / `--n_bins`) → `data/denoised_sem_pn2v_juglab.tif`
   - Multi: `denoise_PN2V_juglab_multi.py`
-- **Paper-faithful PPN2V** (parametric signal-dependent GMM + N2V bootstrap) — `denoise_PPN2V_juglab.py` (`--n2v_epochs`; `--calib_dir` to skip bootstrap; `--n_components`) → `data/denoised_sem_ppn2v_juglab.tif`
+- **Paper-faithful PPN2V** (parametric GMM + N2V bootstrap + K-sample MMSE posterior) — `denoise_PPN2V_juglab.py` (`--n2v_epochs`; `--calib_dir` to skip bootstrap; `--n_components`) → `data/denoised_sem_ppn2v_juglab.tif`
   - Multi: `denoise_PPN2V_juglab_multi.py`
 
 ### Poisson/Gaussian additive noise (full receptive field, no blind-spot masking)

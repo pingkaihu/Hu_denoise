@@ -1,4 +1,4 @@
-# `denoise_PN2V_multi.py` 完整講解
+# `denoise_N2V_GMM_multi.py` 完整講解
 
 > 適合對象：具備基礎 Python / PyTorch 概念、但第一次接觸自監督影像去噪的學習者。
 
@@ -81,7 +81,7 @@ L_i = -log p(y_obs_i | s_pred_i)
 
 ## 3. Multi-Image 版本的擴充邏輯
 
-`denoise_PN2V.py` 只處理單張影像；`denoise_PN2V_multi.py` 的改動：
+`denoise_N2V_GMM.py` 只處理單張影像；`denoise_N2V_GMM_multi.py` 的改動：
 
 | 功能 | 單影像版 | 多影像版 |
 |---|---|---|
@@ -101,7 +101,7 @@ L_i = -log p(y_obs_i | s_pred_i)
 ## 4. 程式整體架構
 
 ```
-denoise_PN2V_multi.py
+denoise_N2V_GMM_multi.py
 │
 ├─ 第 1 節  load_sem_image()        影像載入與正規化
 │           find_images()           掃描目錄
@@ -569,7 +569,7 @@ Patch 必須能被 8 整除（UNet 架構限制）。
 
 ### Q3：不同條件的影像能放在一起訓練嗎？
 
-**不建議**。若影像拍攝條件不同（加速電壓、倍率、樣品材質），噪聲分布會不同，共用 GMM 會平均化不同的噪聲統計，導致去噪效果下降。請改用 `denoise_PN2V.py` 逐張處理。
+**不建議**。若影像拍攝條件不同（加速電壓、倍率、樣品材質），噪聲分布會不同，共用 GMM 會平均化不同的噪聲統計，導致去噪效果下降。請改用 `denoise_N2V_GMM.py` 逐張處理。
 
 ### Q4：什麼時候用 `--train_dir`？
 
@@ -577,10 +577,10 @@ Patch 必須能被 8 整除（UNet 架構限制）。
 
 ```bash
 # 用 10 張代表影像訓練並儲存模型
-python denoise_PN2V_multi.py --input_dir ./train_imgs --output_dir ./out --save_model sem_pn2v.pt
+python denoise_N2V_GMM_multi.py --input_dir ./train_imgs --output_dir ./out --save_model sem_pn2v.pt
 
 # 用儲存的模型對 100 張新影像推論（不重新訓練）
-python denoise_PN2V_multi.py --input_dir ./all_imgs --output_dir ./out --load_model sem_pn2v.pt
+python denoise_N2V_GMM_multi.py --input_dir ./all_imgs --output_dir ./out --load_model sem_pn2v.pt
 ```
 
 ### Q5：背景均值 < 0.02 的警告是什麼意思？
@@ -593,4 +593,4 @@ WARNING: background mean=0.008 < 0.02 (extreme low-dose SEM)
 
 ---
 
-*文件版本：2026-04-14  |  對應腳本：`denoise_PN2V_multi.py`*
+*文件版本：2026-04-14  |  對應腳本：`denoise_N2V_GMM_multi.py`*

@@ -1,55 +1,50 @@
 # ============================================================
-# SEM Image Denoising — PN2V Multi-Image with BIC Automatic GMM Selection
+# SEM Image Denoising — N2V with Parametric GMM + BIC, Multi-Image
 # ============================================================
-# Based on: Krull et al., "Probabilistic Noise2Void: Unsupervised
-#           Content-Aware Denoising without Ground Truth."
-#           Frontiers in Computer Science, 2020.
 #
-# BIC model selection references:
-#   Schwarz, G. (1978). Estimating the dimension of a model.
-#       Annals of Statistics, 6(2), 461–464.
+# Academic context — position in the PN2V / PPN2V family:
+# ─────────────────────────────────────────────────────────
+# See denoise_N2V_GMM.py for the full academic context. In brief:
+# This script is denoise_N2V_GMM_bic.py extended to multiple images.
+# It is an engineering simplification of PPN2V (Krull et al., 2020):
+#   ✓ Same parametric GMM noise model as PPN2V (signal-dependent Gaussians)
+#   ✓ Joint NLL training with shared UNet + shared GMM across all images
+#   ✓ BIC selects n_components from pooled multi-image pixel pairs
+#   ✗ UNet output: single scalar per pixel (NOT K posterior samples)
+#   ✗ Inference: raw UNet scalar (NOT MMSE posterior mean)
+#
+#   Pooling pixel pairs from ALL training images for BIC gives more
+#   statistical support than single-image BIC (especially for low-ENL SEM).
+#   Assumes homogeneous noise statistics across images (same SEM conditions).
+#
+# References:
+#   Krull et al. (2020). Probabilistic Noise2Void. Frontiers Comput. Sci. 3, 575267.
+#   Schwarz, G. (1978). Estimating the dimension of a model. Ann. Stat. 6(2), 461–464.
 #   McLachlan, G. J., & Peel, D. (2000). Finite Mixture Models. Wiley.
-#   Pedregosa et al. (2011). Scikit-learn: Machine Learning in Python.
-#       JMLR, 12, 2825–2830.
+#   Pedregosa et al. (2011). Scikit-learn. JMLR, 12, 2825–2830.
 #
-# This script extends denoise_PN2V_bic.py to multiple images:
-#   - BIC evaluation pools pixel pairs from ALL training images, providing
-#     richer statistics than single-image BIC (especially for low-ENL SEM).
-#   - One shared UNet + one shared GMMNoiseModel trained on the full image pool.
-#   - Same CLI as denoise_PN2V_multi.py plus --bic_candidates / --bic_subsample.
-#
-# When to use this script vs. denoise_PN2V_multi.py:
+# When to use this script vs. denoise_N2V_GMM_multi.py:
 #   Use this script when:
 #   - You have multiple images and are unsure of the correct number of GMM components.
 #   - ENL < 3 in any training image (strong speckle).
-#   Use denoise_PN2V_multi.py when:
+#   Use denoise_N2V_GMM_multi.py directly when:
 #   - You already know n_components (e.g. 2 for pure Poisson+Gaussian noise).
 #
-# Differences from the official PN2V (Krull et al., 2020):
-# ─────────────────────────────────────────────────────────
-# Aspect            │ Official PN2V                  │ This implementation
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Noise model       │ Non-parametric 2D histogram    │ Parametric GMM (auto n_components
-#                   │ (no component count to choose) │ via BIC on pooled multi-image pairs)
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Multi-image       │ Not described in paper         │ Shared GMM + shared UNet.
-# extension         │                                │ Assumes homogeneous noise.
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Network output    │ 800 posterior samples/pixel    │ Single scalar per pixel.
-#                   │ (K=800 output channels; K here │
-#                   │ = posterior samples, unrelated │
-#                   │ to GMM components)             │
-# ──────────────────┼────────────────────────────────┼──────────────────────────────
-# Inference         │ MMSE posterior mean            │ Raw UNet output (default).
-#                   │ (800 forward passes)           │ --use_mmse is experimental.
+# Position table vs. related scripts:
+# ────────────────────────────────────────────────────────────────────────────
+# Script                           │ Noise model        │ Output    │ Inference
+# ─────────────────────────────────┼────────────────────┼───────────┼──────────
+# denoise_N2V_GMM_multi.py         │ parametric GMM     │ scalar    │ raw UNet
+# denoise_N2V_GMM_bic_multi.py←here│ parametric GMM+BIC │ scalar    │ raw UNet
+# denoise_PPN2V_juglab_multi.py    │ parametric GMM     │ K samples │ MMSE
 #
 # Requirements: torch>=2.0.0  tifffile  matplotlib  numpy  scikit-learn
 # Usage:
-#   python denoise_PN2V_bic_multi.py --input_dir ./sem_images --output_dir ./denoised
-#   python denoise_PN2V_bic_multi.py --input_dir ./sem_images --output_dir ./denoised \
-#                                    --gmm_candidates 2 3 5
-#   python denoise_PN2V_bic_multi.py --input_dir ./sem_images --output_dir ./denoised \
-#                                    --n_gaussians 3   # skip BIC, use 3 components
+#   python denoise_N2V_GMM_bic_multi.py --input_dir ./sem_images --output_dir ./denoised
+#   python denoise_N2V_GMM_bic_multi.py --input_dir ./sem_images --output_dir ./denoised \
+#                                       --gmm_candidates 2 3 5
+#   python denoise_N2V_GMM_bic_multi.py --input_dir ./sem_images --output_dir ./denoised \
+#                                       --n_gaussians 3   # skip BIC, use 3 components
 # ============================================================
 
 import math
@@ -498,7 +493,7 @@ def _apply_mmse_tile(
     n_hypotheses: int = 50, search_half_width: float = 0.15,
     device: torch.device = None,
 ) -> np.ndarray:
-    """Experimental MMSE grid correction. See denoise_PN2V.py for limitations."""
+    """Experimental MMSE grid correction. See denoise_N2V_GMM.py for limitations."""
     if device is None:
         device = next(noise_model.parameters()).device
     H, W = s_pred.shape; N = H * W
