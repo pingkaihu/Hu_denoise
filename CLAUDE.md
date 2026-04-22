@@ -53,6 +53,8 @@ Scripts read `.tif`/`.tiff`/`.png` from the working directory and write outputs 
   - Multi: `denoise_PN2V_juglab_multi.py`
 - **Paper-faithful PPN2V** (parametric GMM + N2V bootstrap + K-sample MMSE posterior) — `denoise_PPN2V_juglab.py` (`--n2v_epochs`; `--calib_dir` to skip bootstrap; `--n_components`) → `data/denoised_sem_ppn2v_juglab.tif`
   - Multi: `denoise_PPN2V_juglab_multi.py`
+- **Paper-faithful PPN2V + BIC auto-select** (same as above but BIC selects n_components automatically; needs `scikit-learn`) — `denoise_PPN2V_juglab_bic.py` (`--n_components 0` default=auto; `--bic_candidates`; `--bic_subsample`) → `data/denoised_sem_ppn2v_juglab_bic.tif`
+  - Multi: `denoise_PPN2V_juglab_bic_multi.py`
 
 ### Poisson/Gaussian additive noise (full receptive field, no blind-spot masking)
 - Single: `denoise_GR2R.py` (Gaussian default; `--poisson --binomial_alpha 0.15` for Poisson; `--mc_samples`) → `data/denoised_sem_GR2R.tif`
