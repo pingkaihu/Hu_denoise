@@ -1,0 +1,8 @@
+
+# Basic Style Guidelines for Hu
+- Be terse
+- Be accurate and thorough
+- Ask for clarification if you don't understand something
+
+# Model Rules
+- Switch to Haiku for simple tasks such renaming files, moving files, and creating files.

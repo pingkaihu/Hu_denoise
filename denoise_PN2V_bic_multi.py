@@ -596,8 +596,8 @@ def main():
     parser.add_argument('--epochs',               type=int,   default=100)
     parser.add_argument('--n_gaussians',          type=int,   default=0,
                         help='Fix K (skip BIC). 0 = auto BIC selection (default).')
-    parser.add_argument('--bic_candidates',       type=int,   nargs='+', default=[2, 3, 5, 7],
-                        help='K values to evaluate for BIC (default: 2 3 5 7)')
+    parser.add_argument('--bic_candidates',       type=int,   nargs='+', default=[2, 3, 5, 7, 9, 11, 13],
+                        help='K values to evaluate for BIC (default: 2 3 5 7 9 11 13)')
     parser.add_argument('--bic_subsample',        type=int,   default=200_000,
                         help='Max pooled pixel pairs for BIC (default: 200000)')
     parser.add_argument('--gmm_pretrain_epochs',  type=int,   default=300)
