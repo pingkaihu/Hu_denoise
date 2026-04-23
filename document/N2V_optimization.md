@@ -149,3 +149,86 @@ def save_outputs(..., use_log_transform: bool):
         denoised_final = np.expm1(np.maximum(0, denoised_original)) + img_min
         image_vis = np.expm1(np.maximum(0, image_original)) + img_min
 ```
+
+---
+
+## 6. 訊號相依 GMM 雜訊模型：以 NLL 取代 MSE
+
+### 分析與理由
+
+N2V 的基礎版本以均方誤差（MSE）作為損失函數，其隱含假設是每個像素的噪聲為同方差（homoscedastic）高斯分佈：σ² = const。然而 SEM 影像的雜訊具有明顯的**訊號相依特性（signal-dependent）**：電子計數越多（亮區），散粒雜訊（Poisson noise）的方差越大，即 Var ∝ signal。這種異方差（heteroscedastic）特性使 MSE 在亮暗區域賦予等同的誤差懲罰，導致去雜訊後的暗部細節過度平滑，亮部卻保留殘餘結構。
+
+解決方案是使用**訊號相依的參數化 GMM 雜訊模型**，以最大概似估計（Maximum Likelihood）驅動 UNet 學習，讓損失函數本身就知道「不同訊號強度對應不同噪聲強度」。
+
+### 數學模型
+
+給定 UNet 預測的訊號 s，雜訊模型定義觀測 y 的條件概率為 GMM：
+
+```
+p(y | s) = Σ_k α_k · N(y; s + δ_k, σ²_k(s))
+```
+
+其中：
+- α_k = softmax(w)_k — 混合權重（正規化，Σ α_k = 1）
+- δ_k — 第 k 分量的均值偏移（可學習）
+- σ²_k(s) = exp(a_k · s + b_k) — 訊號相依方差（對數線性，保證恆正）
+
+訓練損失改為**負對數概似（NLL）**，僅在 N2V 遮罩像素位置計算：
+
+```
+L = -(1/|Ω|) Σ_{i ∈ Ω} log p_GMM(y_i | s_i)
+```
+
+其中 Ω 為當前批次中所有盲點（blind-spot）遮罩的像素集合。
+
+### 關鍵程式碼
+
+```python
+class GMMNoiseModel(nn.Module):
+    def __init__(self, n_gaussians: int = 3):
+        super().__init__()
+        self.n_gaussians  = n_gaussians
+        self.log_weights  = nn.Parameter(torch.zeros(n_gaussians))
+        self.mean_offsets = nn.Parameter(torch.linspace(-0.05, 0.05, n_gaussians))
+        self.var_a        = nn.Parameter(torch.zeros(n_gaussians))
+        self.var_b        = nn.Parameter(torch.full((n_gaussians,), -6.0))
+
+    def log_prob(self, y: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        y = y.unsqueeze(-1); s = s.unsqueeze(-1)
+        log_w     = F.log_softmax(self.log_weights, dim=0)
+        mu        = s + self.mean_offsets
+        log_var   = self.var_a * s + self.var_b
+        var       = log_var.exp() + 1e-8
+        log_gauss = -0.5 * ((y - mu) ** 2 / var + log_var + math.log(2 * math.pi))
+        return (log_w + log_gauss).logsumexp(dim=-1)
+
+    def nll_loss(self, y: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        return -self.log_prob(y, s).mean()
+```
+
+在訓練迴圈中，NLL 取代 MSE：
+
+```python
+pred      = model(noisy_in)           # UNet 預測訊號 s
+y_obs     = noisy_tgt[mask_bool]      # 遮罩位置的原始觀測值
+s_pred    = pred[mask_bool]           # 遮罩位置的預測訊號
+loss      = noise_model.nll_loss(y_obs, s_pred)
+```
+
+### GMM 預訓練（Pre-training）
+
+在主訓練迴圈開始前，先用圖像自身的 4-neighbor 均值作為訊號代理（signal proxy），初始化 GMM 參數：
+
+```python
+# 4-neighbor mean as signal proxy
+kernel[0, 0, 0, 1] = 0.25  # top
+kernel[0, 0, 2, 1] = 0.25  # bottom
+kernel[0, 0, 1, 0] = 0.25  # left
+kernel[0, 0, 1, 2] = 0.25  # right
+s_proxy = F.conv2d(img_t, kernel, padding=1).squeeze()
+
+# 以 (s_proxy, y) 像素對批次訓練 GMM，僅更新 noise_model 參數
+loss = noise_model.nll_loss(y_flat[idx], s_flat[idx])
+```
+
+預訓練讓 GMM 在聯合訓練開始前就有良好的初始條件，避免早期劣質 GMM 參數干擾 UNet 梯度。
