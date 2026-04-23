@@ -643,13 +643,17 @@ def main() -> None:
     image, img_min, img_max = load_sem_image(args.input)
     print(f"Image: {image.shape}  range: [{img_min:.3f}, {img_max:.3f}]")
 
-    # --- Low-count diagnostic ---
+    # --- Low-count diagnostic (on linear image before transform) ---
     bg_mean = float(image[:30, :30].mean())
     if bg_mean < 0.02:
         print(f"WARNING: background mean={bg_mean:.4f} < 0.02 (extreme low-dose SEM).")
-        print("  PN2V in raw space is the correct choice; no transforms applied.")
+        print("  Consider using denoise_N2V_GMM_bic.py (linear domain) instead.")
     else:
         print(f"Background mean={bg_mean:.4f}  (normal signal level)")
+
+    # --- Log transform ---
+    log_image, log_min, log_max = apply_log_transform(image)
+    print(f"Log transform applied: log range [{log_min:.4f}, {log_max:.4f}] → renormalized to [0,1]")
 
     # --- BIC or manual component count selection ---
     if args.n_gaussians > 0:
@@ -657,33 +661,38 @@ def main() -> None:
         print(f"Using fixed n_components={n_gaussians} (--n_gaussians specified, BIC skipped)")
     else:
         n_gaussians = select_num_gaussians_bic(
-            image,
+            log_image,
             candidates=args.gmm_candidates,
             subsample=args.bic_subsample,
         )
 
     # --- GMM pre-training ---
     noise_model = GMMNoiseModel(n_gaussians=n_gaussians)
-    pretrain_gmm(noise_model, image, n_epochs=args.gmm_pretrain_epochs, device=device)
+    pretrain_gmm(noise_model, log_image, n_epochs=args.gmm_pretrain_epochs, device=device)
 
     # --- Joint UNet + GMM training ---
     model = N2VUNet(in_channels=1, base_features=32)
-    train_pn2v(model, noise_model, image,
+    train_pn2v(model, noise_model, log_image,
                patch_size=args.patch_size, batch_size=args.batch_size,
                num_epochs=args.epochs, device=device)
 
-    # --- Inference ---
+    # --- Inference (in log domain) ---
     _nm = noise_model if args.use_mmse else None
-    print("\nRunning tiled inference" +
+    print("\nRunning tiled inference (log domain)" +
           (" (MMSE grid — experimental)..." if _nm is not None else "..."))
-    denoised = predict_tiled(model, image, noise_model=_nm,
-                             tile_size=(args.tile_size, args.tile_size),
-                             tile_overlap=(args.tile_overlap, args.tile_overlap),
-                             infer_batch_size=args.infer_batch, device=device)
+    denoised_log = predict_tiled(model, log_image, noise_model=_nm,
+                                 tile_size=(args.tile_size, args.tile_size),
+                                 tile_overlap=(args.tile_overlap, args.tile_overlap),
+                                 infer_batch_size=args.infer_batch, device=device)
+
+    # --- Inverse log transform → linear [0,1] ---
+    denoised_linear = inverse_log_transform(denoised_log, log_min, log_max)
+    print(f"Inverse log transform applied: "
+          f"linear range [{denoised_linear.min():.4f}, {denoised_linear.max():.4f}]")
 
     # --- Save ---
-    save_outputs(image, denoised, img_min, img_max, tif_path=output_path)
-    noise_model.plot_noise_model(save_path="data/noise_model_PN2V_bic.png")
+    save_outputs(image, denoised_linear, img_min, img_max, tif_path=output_path)
+    noise_model.plot_noise_model(save_path="data/noise_model_log_N2V_GMM_bic.png")
     print(f"BIC selected n_components={n_gaussians}")
 
 
