@@ -232,3 +232,64 @@ loss = noise_model.nll_loss(y_flat[idx], s_flat[idx])
 ```
 
 預訓練讓 GMM 在聯合訓練開始前就有良好的初始條件，避免早期劣質 GMM 參數干擾 UNet 梯度。
+
+---
+
+## 7. BIC 自動選擇高斯分量數
+
+### 分析與理由
+
+GMM 的分量數 K（`n_gaussians`）是影響模型容量的核心超參數。若 K 過小，GMM 無法捕捉厚尾（heavy-tail）或雙峰噪聲分佈的形狀；若 K 過大，模型過擬合訓練資料，參數估計變得不穩定，且訓練時間增加。傳統做法需手動試誤，而 BIC（Bayesian Information Criterion，貝氏資訊準則）可自動選出最佳 K。
+
+### BIC 原理
+
+BIC 在對數概似（擬合品質）和模型複雜度（參數數量）之間取得平衡：
+
+```
+BIC(K) = n_params(K) · ln(n) - 2 · L̂(K)
+```
+
+- n_params(K)：模型參數量（GMM 中近似 5K：權重 K-1、均值偏移 K、方差參數 a_k、b_k 各 K）
+- n：用於擬合的樣本數
+- L̂(K)：最大化的對數概似
+
+**BIC 越低代表模型越好**（在懲罰複雜度後仍有更好的擬合）。BIC 比 AIC 對過擬合的懲罰更強，在樣本數較大（SEM 影像像素數 >> 10K）時表現穩定。
+
+### 實作策略
+
+BIC 評估使用 2D 代理空間 (s_proxy, y) 而非完整的條件 GMM p(y|s)。這讓我們可以套用 `sklearn.mixture.GaussianMixture` 直接計算 BIC，而不需要執行多次完整的 GMM-NLL 訓練，大幅節省評估時間：
+
+```python
+def select_num_gaussians_bic(image, candidates=[2, 3, 5, 7], subsample=100_000):
+    # 以 4-neighbor mean 為訊號代理，組成 2D 特徵對
+    y_flat, s_flat = _build_pixel_pairs(image)
+    X = np.stack([s_flat, y_flat], axis=1)   # shape: (N, 2)
+
+    # 次取樣加速 BIC 評估（100K 樣本即可穩定估計）
+    if len(X) > subsample:
+        idx = rng.choice(len(X), size=subsample, replace=False)
+        X   = X[idx]
+
+    best_bic, best_k = np.inf, candidates[0]
+    for k in candidates:
+        gmm = GaussianMixture(
+            n_components=k, covariance_type='full',
+            random_state=42, max_iter=300, n_init=3,
+        ).fit(X)
+        bic = gmm.bic(X)
+        if bic < best_bic:
+            best_bic, best_k = bic, k
+
+    return best_k   # 使用此 K 建立 GMMNoiseModel
+```
+
+次取樣（subsample）控制 BIC 評估時間：對於 512×512 影像（26 萬像素），僅採樣 10 萬對即得穩定估計，比完整資料快約 2.6 倍。
+
+### 適用時機
+
+| 情況 | 建議 |
+|---|---|
+| ENL < 3（強散斑） | 使用 BIC，避免 K=3 低估重尾分佈 |
+| 不確定噪聲結構 | 使用 BIC，自動探索候選 K |
+| 已知 K（如 Poisson+Gaussian 混合） | 直接 `--n_gaussians 2`，跳過 BIC |
+| 訓練速度優先 | 指定 `--n_gaussians`，省去 BIC 評估時間 |
