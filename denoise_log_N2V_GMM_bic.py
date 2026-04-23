@@ -196,7 +196,7 @@ class GMMNoiseModel(nn.Module):
         return -self.log_prob(y, s).mean()
 
     @torch.no_grad()
-    def plot_noise_model(self, save_path: str = "data/noise_model_bic.png") -> None:
+    def plot_noise_model(self, save_path: str = "data/noise_model_log_N2V_GMM_bic.png") -> None:
         device   = self.var_a.device
         s_vals   = torch.linspace(0, 1, 200, device=device)
         s_expand = s_vals.unsqueeze(-1)
@@ -590,17 +590,17 @@ def predict_tiled(
 def save_outputs(
     image: np.ndarray, denoised: np.ndarray,
     img_min: float, img_max: float,
-    tif_path: str = "data/denoised_sem_PN2V_bic.tif",
-    png_path: str = "data/denoising_result_PN2V_bic.png",
+    tif_path: str = "data/denoised_sem_log_N2V_GMM_bic.tif",
+    png_path: str = "data/denoising_result_log_N2V_GMM_bic.png",
 ) -> None:
     denoised_orig = (denoised * (img_max - img_min) + img_min).astype(np.float32)
     tifffile.imwrite(tif_path, denoised_orig)
     print(f"Saved: {tif_path}  range: [{denoised_orig.min():.3f}, {denoised_orig.max():.3f}]")
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    axes[0].imshow(image,    cmap='gray'); axes[0].set_title('Original SEM');        axes[0].axis('off')
-    axes[1].imshow(denoised, cmap='gray'); axes[1].set_title('PN2V-BIC Denoised');   axes[1].axis('off')
+    axes[0].imshow(image,    cmap='gray'); axes[0].set_title('Original SEM');               axes[0].axis('off')
+    axes[1].imshow(denoised, cmap='gray'); axes[1].set_title('Log + N2V-GMM-BIC Denoised'); axes[1].axis('off')
     diff = np.abs(image - denoised) * 3
-    axes[2].imshow(diff, cmap='hot');     axes[2].set_title('Difference (×3)');       axes[2].axis('off')
+    axes[2].imshow(diff, cmap='hot');     axes[2].set_title('Difference (×3)');              axes[2].axis('off')
     plt.tight_layout(); plt.savefig(png_path, dpi=150); plt.show()
     print(f"Saved: {png_path}")
 
@@ -611,7 +611,11 @@ def save_outputs(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="PN2V with BIC auto-selection of GMM component count."
+        description=(
+            "Log + N2V with parametric GMM noise model and BIC auto-selection of "
+            "n_components. Applies log1p pre-transform for speckle stabilization; "
+            "GMM models residual signal-dependent noise in log domain."
+        )
     )
     parser.add_argument('--input',               type=str,   default='data/test_sem.tif')
     parser.add_argument('--output',              type=str,   default='')
@@ -634,7 +638,7 @@ def main() -> None:
                              'WARNING: returns near-noisy output for single-scalar network.')
     args = parser.parse_args()
 
-    output_path = args.output or "data/denoised_sem_PN2V_bic.tif"
+    output_path = args.output or "data/denoised_sem_log_N2V_GMM_bic.tif"
     os.makedirs("data", exist_ok=True)
     device = torch.device(args.device if args.device
                           else ('cuda' if torch.cuda.is_available() else 'cpu'))
