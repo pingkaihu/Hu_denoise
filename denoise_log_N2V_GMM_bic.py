@@ -354,7 +354,7 @@ def select_num_gaussians_bic(
     else:
         n_bic = n
 
-    print(f"\nBIC model selection — evaluating n_components ∈ {candidates} "
+    print(f"\nBIC model selection — evaluating n_components in {candidates} "
           f"({n_bic:,} pixel pairs) ...")
 
     best_bic, best_k = np.inf, candidates[0]
