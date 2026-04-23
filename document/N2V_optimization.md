@@ -293,3 +293,77 @@ def select_num_gaussians_bic(image, candidates=[2, 3, 5, 7], subsample=100_000):
 | 不確定噪聲結構 | 使用 BIC，自動探索候選 K |
 | 已知 K（如 Poisson+Gaussian 混合） | 直接 `--n_gaussians 2`，跳過 BIC |
 | 訓練速度優先 | 指定 `--n_gaussians`，省去 BIC 評估時間 |
+
+---
+
+## 8. 對數域 + GMM 聯合去雜訊
+
+### 分析與理由
+
+SEM 影像常同時含有兩種噪聲成分：
+
+1. **Gamma 散斑（乘性）**：y = x · n_γ，其中 n_γ ~ Gamma — 由電子束不均勻性造成，在亮區尤為顯著
+2. **Poisson 散粒（訊號相依加性）**：Var(n_p) ∝ x — 由光子/電子計數的量子統計性造成
+
+純線性 GMM（`denoise_N2V_GMM_bic.py`）在面對強散斑時，GMM 需同時建模乘性與加性噪聲，分量數即使靠 BIC 自動選擇仍可能不足。對數變換能有效分離這兩種成分。
+
+### 對數變換原理
+
+取 log(1 + y)（`log1p`）後，乘性 Gamma 噪聲近似轉化為加性：
+
+```
+log(1 + y) ≈ log(1 + x) + log(n_γ)     （log(n_γ) 為加性偏移）
+```
+
+轉換後的對數域噪聲：
+- Gamma 分量 → 加性（均值近零的穩定偏移）
+- Poisson 分量 → 保留訊號相依方差（依然需要 GMM 建模）
+
+因此：**log1p 處理 Gamma 散斑，GMM 處理殘餘 Poisson 結構**，兩者互補。
+
+### Pipeline
+
+```
+load_sem_image()
+  → apply_log_transform()          # log1p → 重新正規化 [0,1]
+    → select_num_gaussians_bic()   # 在對數域像素對上執行 BIC
+    → pretrain_gmm()               # 在對數域 (s_proxy_log, y_log) 上初始化 GMM
+    → train_pn2v()                 # 聯合訓練（對數域）
+    → predict_tiled()              # 推論（對數域 → denoised_log）
+  → inverse_log_transform()        # 反正規化 → expm1 → 線性 [0,1]
+    → 還原原始值域 → 儲存 TIF/PNG
+```
+
+對數變換函式：
+
+```python
+def apply_log_transform(image: np.ndarray) -> Tuple[np.ndarray, float, float]:
+    log_img = np.log1p(image)
+    log_min, log_max = float(log_img.min()), float(log_img.max())
+    log_norm = (log_img - log_min) / (log_max - log_min + 1e-8)
+    return log_norm.astype(np.float32), log_min, log_max
+
+def inverse_log_transform(
+    denoised_log: np.ndarray, log_min: float, log_max: float
+) -> np.ndarray:
+    return np.expm1(denoised_log * (log_max - log_min) + log_min).astype(np.float32)
+```
+
+注意：兩步驟正規化（log1p 後再 min-max 到 [0,1]）確保對數域影像的數值範圍與基礎 N2V pipeline 的輸入假設一致；`inverse_log_transform` 精確還原到線性 [0,1] 空間，再由 `save_outputs` 還原到原始像素值域。
+
+### 與相關腳本的對比
+
+| 腳本 | 域 | 雜訊模型 | 輸出 | 推論方式 |
+|---|---|---|---|---|
+| `denoise_N2V_GMM_bic.py` | 線性 | GMM + BIC | 純量 | 原始 UNet |
+| `denoise_log_N2V_GMM_bic.py` | 對數 | GMM + BIC | 純量 | 原始 UNet |
+| `denoise_log_PPN2V_juglab.py` | 對數 | GMM（手動 K） | K=800 樣本 | MMSE 後驗均值 |
+| `denoise_PPN2V_juglab_bic.py` | 線性 | GMM + BIC | K=800 樣本 | MMSE 後驗均值 |
+
+`denoise_log_N2V_GMM_bic.py` 填補了「對數域 + 快速純量推論 + BIC 自動選擇」的空缺，在訓練速度上快於 `log_PPN2V_juglab`（省去 bootstrap N2V 階段與 K=800 MMSE 採樣），適合快速驗證對數域 GMM 效果。
+
+### 適用情境
+
+- ENL < 3 的強散斑 SEM 影像（線性 GMM 去雜訊後仍有殘餘散斑結構時）
+- 需要 BIC 自動選擇分量數，無法手動試誤
+- 需要比 `log_PPN2V_juglab` 更快的結果（不需要 K=800 MMSE 品質）
