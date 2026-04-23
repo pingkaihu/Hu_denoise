@@ -13,21 +13,36 @@ Hu_denoise/
 ├── reference/                 # 學術論文 PDF 及引用索引
 │
 │   # ── 去噪腳本（單張影像）──
-├── denoise_N2V.py             # 標準單張 N2V（PyTorch 基礎版）
-├── denoise_N2V_GMM.py            # PN2V 混合噪聲（GMM 噪聲模型）
-├── denoise_log_N2V.py         # Log + N2V（Speckle 乘性噪聲）
-├── denoise_apbsn.py           # AP-BSN（CVPR 2022，非對稱 PD）
-├── denoise_DIP.py             # Deep Image Prior（CVPR 2018，無噪聲模型假設）
-├── denoise_GR2R.py            # GR2R（CVPR 2021，雙重再破壞，全感受野）
+├── denoise_N2V.py                    # 標準單張 N2V（PyTorch 基礎版）
+├── denoise_N2V_GMM.py                # PN2V 混合噪聲（GMM 噪聲模型）
+├── denoise_N2V_GMM_bic.py            # PN2V + BIC 自動選擇 GMM 容量
+├── denoise_log_N2V.py                # Log + N2V（Speckle 乘性噪聲）
+├── denoise_log_N2V_GMM_bic.py        # Log + N2V + GMM + BIC（乘性 + Poisson 混合）
+├── denoise_PN2V_juglab.py            # PN2V 論文完整版（非參數直方圖噪聲模型）
+├── denoise_PPN2V_juglab.py           # PPN2V 論文完整版（參數化 GMM + N2V bootstrap）
+├── denoise_PPN2V_juglab_bic.py       # PPN2V + BIC 自動選擇 GMM 容量
+├── denoise_log_PPN2V_juglab.py       # Log + PPN2V（乘性 + Poisson 混合，論文版）
+├── denoise_apbsn.py                  # AP-BSN（CVPR 2022，非對稱 PD）
+├── denoise_apbsn_faithful.py         # AP-BSN 論文完整版（DBSNl + R3）
+├── denoise_apbsn_lee.py              # AP-BSN 官方版（PD 嵌入 forward，R3 via bsn）
+├── denoise_DIP.py                    # Deep Image Prior（CVPR 2018，無噪聲模型假設）
+├── denoise_GR2R.py                   # GR2R（CVPR 2021，雙重再破壞，全感受野）
+├── denoise_N2Score.py                # Noise2Score（NeurIPS 2021，Tweedie 公式）
 │
 │   # ── 去噪腳本（多張影像）──
-├── denoise_N2V_multi.py       # 多張影像共用 N2V 模型
-├── denoise_log_N2V_multi.py   # 多張影像 + 乘性噪聲，log 域共用模型
-├── denoise_N2V_GMM_multi.py      # 多張影像 + 混合噪聲，共用 GMM
-├── denoise_GR2R_multi.py      # 多張影像 GR2R（全感受野，無盲點遮蔽）
-├── denoise_apbsn_multi.py     # AP-BSN 多張影像版
-├── denoise_apbsn_faithful.py  # AP-BSN 論文完整版（DBSNl + R3，單張）
-├── denoise_apbsn_faithful_multi.py # AP-BSN 論文完整版（多張影像）
+├── denoise_N2V_multi.py              # 多張影像共用 N2V 模型
+├── denoise_log_N2V_multi.py          # 多張影像 + 乘性噪聲，log 域共用模型
+├── denoise_N2V_GMM_multi.py          # 多張影像 + 混合噪聲，共用 GMM
+├── denoise_N2V_GMM_bic_multi.py      # 多張影像 + 混合噪聲 + BIC
+├── denoise_log_N2V_GMM_bic_multi.py  # 多張影像 Log + N2V + GMM + BIC
+├── denoise_PN2V_juglab_multi.py      # 多張影像 PN2V 論文完整版
+├── denoise_PPN2V_juglab_multi.py     # 多張影像 PPN2V 論文完整版
+├── denoise_PPN2V_juglab_bic_multi.py # 多張影像 PPN2V + BIC
+├── denoise_log_PPN2V_juglab_multi.py # 多張影像 Log + PPN2V
+├── denoise_GR2R_multi.py             # 多張影像 GR2R（全感受野，無盲點遮蔽）
+├── denoise_apbsn_multi.py            # AP-BSN 多張影像版
+├── denoise_apbsn_faithful_multi.py   # AP-BSN 論文完整版（多張影像）
+├── denoise_apbsn_lee_multi.py        # AP-BSN 官方版（多張影像）
 │
 │   # ── 工具腳本 ──
 ├── test_sem.py                # 產生單張合成 SEM 測試影像
@@ -60,16 +75,29 @@ python denoise_N2V.py
 | 均勻顆粒噪聲（無條紋） | `denoise_N2V.py` | `data/denoised_sem_N2V.tif` |
 | 混合噪聲（Poisson + Gamma）| `denoise_N2V_GMM.py` ✦ | `data/denoised_sem_PN2V.tif` |
 | 混合噪聲，自動選擇 GMM 容量 | `denoise_N2V_GMM_bic.py` ✦ | `data/denoised_sem_PN2V_bic.tif` |
+| 混合噪聲，Log 域 + GMM + BIC | `denoise_log_N2V_GMM_bic.py` ✦ | `data/denoised_sem_log_N2V_GMM_bic.tif` |
+| 混合噪聲，論文完整版 PN2V（非參數直方圖） | `denoise_PN2V_juglab.py` ✦ | `data/denoised_sem_pn2v_juglab.tif` |
+| 混合噪聲，論文完整版 PPN2V（參數化 GMM） | `denoise_PPN2V_juglab.py` ✦ | `data/denoised_sem_ppn2v_juglab.tif` |
+| 混合噪聲，PPN2V + BIC 自動選擇 GMM 容量 | `denoise_PPN2V_juglab_bic.py` ✦ | `data/denoised_sem_ppn2v_juglab_bic.tif` |
+| 乘性 + Poisson 混合（Log + PPN2V，論文版） | `denoise_log_PPN2V_juglab.py` ✦ | `data/denoised_sem_log_ppn2v_juglab.tif` |
 | Speckle / 乘性噪聲 | `denoise_log_N2V.py` | `data/denoised_sem_log_torch.tif` |
 | 多張影像，相似條件 | `denoise_N2V_multi.py` | `--output_dir` 旗標指定 |
 | 多張影像，乘性 / 散斑噪聲 | `denoise_log_N2V_multi.py` | `--output_dir` 旗標指定 |
 | 多張影像，混合噪聲 | `denoise_N2V_GMM_multi.py` ✦ | `--output_dir` 旗標指定 |
 | 多張影像，混合噪聲，自動選擇 GMM 容量 | `denoise_N2V_GMM_bic_multi.py` ✦ | `--output_dir` 旗標指定 |
+| 多張影像，混合噪聲，Log + GMM + BIC | `denoise_log_N2V_GMM_bic_multi.py` ✦ | `--output_dir` 旗標指定 |
+| 多張影像，PN2V 論文完整版 | `denoise_PN2V_juglab_multi.py` ✦ | `--output_dir` 旗標指定 |
+| 多張影像，PPN2V 論文完整版 | `denoise_PPN2V_juglab_multi.py` ✦ | `--output_dir` 旗標指定 |
+| 多張影像，PPN2V + BIC | `denoise_PPN2V_juglab_bic_multi.py` ✦ | `--output_dir` 旗標指定 |
+| 多張影像，Log + PPN2V | `denoise_log_PPN2V_juglab_multi.py` ✦ | `--output_dir` 旗標指定 |
 | 多張影像，未知加性噪聲（全感受野） | `denoise_GR2R_multi.py` | `--output_dir` 旗標指定 |
 | 真實世界複雜噪聲（非對稱 PD，抑制掃描格柵偽影） | `denoise_apbsn.py` | `data/denoised_apbsn.tif` |
 | 真實世界複雜噪聲（論文完整版 DBSNl + R3） | `denoise_apbsn_faithful.py` | `data/denoised_sem_apbsn_faithful.tif` |
 | 同上，多張影像 | `denoise_apbsn_faithful_multi.py` | `--output_dir` 旗標指定 |
+| 真實世界複雜噪聲（官方版 PD in forward + R3） | `denoise_apbsn_lee.py` | `data/denoised_sem_apbsn_lee.tif` |
+| 同上，多張影像 | `denoise_apbsn_lee_multi.py` | `--output_dir` 旗標指定 |
 | 真實世界複雜噪聲（無盲點遮罩，全感受野） | `denoise_GR2R.py` | `data/denoised_sem_GR2R.tif` |
+| 統一 Gaussian / Poisson / Gamma（score-based） | `denoise_N2Score.py` | `data/denoised_sem_N2Score.tif` |
 | 噪聲類型未知 | `denoise_DIP.py` | `data/denoised_sem_DIP.tif` |
 | N2V 留下棋盤格偽影 | `denoise_DIP.py` | `data/denoised_sem_DIP.tif` |
 
@@ -97,6 +125,14 @@ result = bm3d.bm3d(image, sigma_psd=0.05)
 | [denoise_apbsn_faithful.py](denoise_apbsn_faithful.py) | AP-BSN 論文完整版——DBSNl（CentralMaskedConv2d + 擴張分支）+ L1 全像素 loss + 非對稱 PD（pd_a 訓練 / pd_b 推論）+ R3 隨機替換細化（T=8, p=0.16）。 |
 | [denoise_DIP.py](denoise_DIP.py) | Deep Image Prior（CVPR 2018）——無訓練集，以 generator 網路作隱式先驗，EMA 早停；GPU 約 3–5 分鐘。 |
 | [denoise_GR2R.py](denoise_GR2R.py) | GR2R（CVPR 2021）——無盲點遮罩；訓練雙重再破壞 patch 對；全感受野；支援高斯與 Poisson 再破壞（`--poisson`）；自動估計噪聲標準差。 |
+| [denoise_N2V_GMM_bic.py](denoise_N2V_GMM_bic.py) | PN2V + BIC 自動選擇——執行前自動評估 K ∈ {2,3,5,7}，選最低 BIC 的 K 再訓練；需 `scikit-learn`；強 speckle（ENL < 3）時建議使用。 |
+| [denoise_log_N2V_GMM_bic.py](denoise_log_N2V_GMM_bic.py) | Log + N2V + GMM + BIC——log1p 穩定化 Gamma 乘性分量；GMM 在 log 域建模殘餘 Poisson 信號相依性；BIC 自動選 n_components；適用乘性 + Poisson 混合噪聲。 |
+| [denoise_PN2V_juglab.py](denoise_PN2V_juglab.py) | PN2V 論文完整版（juglab-faithful）——非參數 2D 直方圖噪聲模型（256×256 bins，p(y\|s) per row）；K=800 樣本 MMSE 後驗均值；`--calib_dir` 支援外部校準影像；`--K` / `--n_bins` 可調。 |
+| [denoise_PPN2V_juglab.py](denoise_PPN2V_juglab.py) | PPN2V 論文完整版（juglab-faithful）——參數化信號相依 GMM + N2V bootstrap 校準 + K 樣本 MMSE 後驗；`--n2v_epochs` / `--calib_dir` / `--n_components` 可調。 |
+| [denoise_PPN2V_juglab_bic.py](denoise_PPN2V_juglab_bic.py) | PPN2V + BIC 自動選擇——`--n_components 0`（default=auto）用 BIC 自動選 GMM 容量；`--bic_candidates` / `--bic_subsample` 可調；需 `scikit-learn`。 |
+| [denoise_log_PPN2V_juglab.py](denoise_log_PPN2V_juglab.py) | Log + PPN2V（juglab-faithful）——log1p 穩定化 Gamma 散斑；GMM 在 log 域建模殘餘 Poisson 信號相依性；適用散斑主導 + Poisson 混合噪聲；`--n2v_epochs` / `--calib_dir` / `--n_components` 可調。 |
+| [denoise_apbsn_lee.py](denoise_apbsn_lee.py) | AP-BSN 官方版（Lee et al., CVPR 2022）——PD 嵌入 model.forward()（torch 實作）；R3 直接呼叫 self.bsn()；`pd_stride=2`（SEM）或 `pd_stride=5`（sRGB）；`--save_model` / `--load_model`。 |
+| [denoise_N2Score.py](denoise_N2Score.py) | Noise2Score（NeurIPS 2021）——AR-DAE 估計 score 函數 ∇ log p(y)；Tweedie 公式映射到去噪影像；`--noise_model gaussian/poisson/gamma`；`--blind` 自動估計 σ（TV-norm）。 |
 
 ### 多張影像
 
@@ -106,9 +142,15 @@ result = bm3d.bm3d(image, sigma_psd=0.05)
 | [denoise_log_N2V_multi.py](denoise_log_N2V_multi.py) | 多張影像 Log+N2V，log 域共用訓練；適合乘性 / 散斑噪聲多圖場景。 |
 | [denoise_N2V_GMM_multi.py](denoise_N2V_GMM_multi.py) | 多張影像共用 UNet + 共用 GMM；匯集所有影像的像素對，使噪聲統計更豐富。與官方差異同 denoise_N2V_GMM.py（多張影像 shared GMM 為本專案擴展，非原論文內容）。 |
 | [denoise_N2V_GMM_bic_multi.py](denoise_N2V_GMM_bic_multi.py) | 多張影像 PN2V + BIC 自動選擇 GMM 容量——BIC 在匯集所有影像的像素對上評估，統計支撐更充足。 |
+| [denoise_log_N2V_GMM_bic_multi.py](denoise_log_N2V_GMM_bic_multi.py) | 多張影像 Log + N2V + GMM + BIC——匯集所有影像 log 域像素對做 BIC 評估；適用多圖乘性 + Poisson 混合噪聲場景。 |
+| [denoise_PN2V_juglab_multi.py](denoise_PN2V_juglab_multi.py) | 多張影像 PN2V 論文完整版——共用非參數直方圖噪聲模型；匯集所有影像像素對建構直方圖，統計支撐更充足。 |
+| [denoise_PPN2V_juglab_multi.py](denoise_PPN2V_juglab_multi.py) | 多張影像 PPN2V 論文完整版——共用參數化信號相依 GMM；N2V bootstrap 使用所有影像聯合訓練。 |
+| [denoise_PPN2V_juglab_bic_multi.py](denoise_PPN2V_juglab_bic_multi.py) | 多張影像 PPN2V + BIC——BIC 在匯集所有影像的像素對上評估；自動選擇 GMM 容量；需 `scikit-learn`。 |
+| [denoise_log_PPN2V_juglab_multi.py](denoise_log_PPN2V_juglab_multi.py) | 多張影像 Log + PPN2V——log 域共用 PPN2V 訓練；適用多圖散斑主導 + Poisson 混合噪聲場景。 |
 | [denoise_GR2R_multi.py](denoise_GR2R_multi.py) | 多張影像 GR2R；無盲點遮蔽，全感受野；各圖自動估計 σ 後取均值作再污染強度。 |
 | [denoise_apbsn_multi.py](denoise_apbsn_multi.py) | AP-BSN 多張影像版。 |
 | [denoise_apbsn_faithful_multi.py](denoise_apbsn_faithful_multi.py) | AP-BSN 論文完整版多張影像——共用一個 DBSNl 模型訓練所有影像；R3 逐圖套用；支援 `--train_dir` / `--save_model` / `--load_model`。 |
+| [denoise_apbsn_lee_multi.py](denoise_apbsn_lee_multi.py) | AP-BSN 官方版多張影像——共用 BSN 模型；PD 嵌入 forward；R3 via self.bsn()；支援 `--save_model` / `--load_model`。 |
 
 ```bash
 # 多張影像去噪（N2V 或 PN2V 皆同介面）
