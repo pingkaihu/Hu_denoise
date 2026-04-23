@@ -47,7 +47,9 @@
       "WebFetch(domain:www.frontiersin.org)",
       "WebFetch(domain:prelights.biologists.com)",
       "WebFetch(domain:juglab.github.io)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   }
 }

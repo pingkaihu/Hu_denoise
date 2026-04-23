@@ -22,6 +22,9 @@ sem_struct_n2v/
 .DS_Store
 Thumbs.db
 
+# Plans
+docs/
+
 # Data files
 data/
 
