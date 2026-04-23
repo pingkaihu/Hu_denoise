@@ -48,7 +48,7 @@ Scripts read `.tif`/`.tiff`/`.png` from the working directory and write outputs 
 - **N2V + GMM noise model, auto BIC (recommended)** — `denoise_N2V_GMM_bic.py` (needs `scikit-learn`; uses PPN2V's parametric GMM but with scalar output; BIC auto-selects n_components) → `data/denoised_sem_PN2V_bic.tif`
   - Multi: `denoise_N2V_GMM_bic_multi.py`
 - **Log + N2V + GMM noise model, auto BIC** — `denoise_log_N2V_GMM_bic.py` (log1p pre-transform stabilises speckle; GMM models residual Poisson in log domain; BIC auto-selects n_components; faster than log_PPN2V_juglab) → `data/denoised_sem_log_N2V_GMM_bic.tif`
-  - Multi: (not yet created)
+  - Multi: `denoise_log_N2V_GMM_bic_multi.py`
 - **N2V + GMM noise model, manual n_components** — `denoise_N2V_GMM.py` (same as above but you specify `--n_gaussians` directly; faster when n_components is known) → `data/denoised_sem_PN2V.tif`
   - Multi: `denoise_N2V_GMM_multi.py`
 - **Paper-faithful PN2V** (non-parametric histogram 256×256, K=800 MMSE) — `denoise_PN2V_juglab.py` (`--calib_dir` for external calib; `--K` / `--n_bins`) → `data/denoised_sem_pn2v_juglab.tif`
