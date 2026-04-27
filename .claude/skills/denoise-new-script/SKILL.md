@@ -1,14 +1,12 @@
 ---
 name: denoise-new-script
 description: >
-  Generate a new SEM image denoising Python script for this project, following
-  the established conventions (UNet, tiled inference, side-by-side output).
-  Use this skill whenever the user wants to implement a new denoising algorithm,
-  try a new method, or says things like "幫我建一個 X 的去噪腳本", "implement X
-  denoising", "新增 X 方法", "I want to try X algorithm", "add support for X
-  noise model", "create a script for Y method" — even if they don't say "script"
-  explicitly. Also trigger when discussing a new paper or technique the user
-  wants to test in this SEM context.
+  Use when the user wants to implement a new denoising algorithm, try a new
+  method, or says things like "幫我建一個 X 的去噪腳本", "implement X denoising",
+  "新增 X 方法", "I want to try X algorithm", "add support for X noise model",
+  "create a script for Y method" — even if they don't say "script" explicitly.
+  Also trigger when discussing a new paper or technique to test in this SEM
+  context.
 ---
 
 # denoise-new-script
@@ -18,6 +16,18 @@ the current working directory. Every script must feel consistent with the
 existing ones — a developer should be able to open any two scripts side by side
 and immediately see they belong to the same codebase.
 
+## Script naming
+
+| Variant | Convention | Example |
+|---|---|---|
+| Single image | `denoise_<METHOD>.py` | `denoise_HDN.py` |
+| Multi-image | `denoise_<METHOD>_multi.py` | `denoise_HDN_multi.py` |
+
+Ask the user: single-image only, or also create the `_multi` variant?
+If uncertain, default to single-image first.
+
+---
+
 ## Before writing
 
 1. Ask the user (or infer from context) two things:
@@ -26,9 +36,16 @@ and immediately see they belong to the same codebase.
 
    If the user already gave enough context, skip the question.
 
-2. Read `denoise_N2V_multi.py` briefly to confirm you have the current shared
-   boilerplate (it is the most complete template). You've likely already seen it
-   in the conversation, so re-reading is optional.
+2. Choose the closest existing script as your template and skim only the sections
+   that differ from your target algorithm:
+
+   | Target algorithm | Template |
+   |---|---|
+   | Standard N2V-family | `denoise_N2V_multi.py` |
+   | Log-domain variant | `denoise_log_N2V_multi.py` |
+   | Log + GMM + BIC | `denoise_log_N2V_GMM_bic_multi.py` |
+   | Paper-faithful PN2V / PPN2V | `denoise_PPN2V_juglab_multi.py` |
+   | Score-based / DIP / other | `denoise_N2Score.py` or `denoise_DIP.py` |
 
 3. Consult the reference documents below as needed — they contain decisions
    already made in this project that the new script should respect:
@@ -143,12 +160,15 @@ The novel part lives between sections 3–5. Examples:
 | Algorithm | Change |
 |---|---|
 | N2V standard | MSE loss on masked pixels only |
-| PN2V | Add `GMMNoiseModel`; pretrain GMM; replace MSE with NLL |
+| PN2V / PPN2V | Add `GMMNoiseModel`; pretrain GMM; replace MSE with NLL |
 | Log-N2V | `log1p` on load, `expm1` on output; rest unchanged |
+| Log-N2V-GMM-BIC | `log1p` on load; GMM NLL loss; BIC auto-selects n_components; `expm1` on output |
 | Noise2Self | J-invariant masking (each pixel predicts itself via partitioned subsets) |
 | HDN | Hierarchical VAE encoder; KL + reconstruction loss |
 | Recorrupted-to-Recorrupted (R2R) / GR2R | Re-corrupt input twice with Gaussian or Poisson noise; MSE on all pixels (no masking); auto-estimate noise std via Laplacian MAD — see `denoise_GR2R.py` |
-| AP-BSN | Asymmetric pixel-shuffle downsampling + blind-spot network; no noise model required; separate PD stride for train vs. inference — see `denoise_apbsn.py` |
+| AP-BSN | Asymmetric pixel-shuffle downsampling + blind-spot network; no noise model required; separate PD stride for train vs. inference — see `denoise_apbsn_lee.py` |
+| N2Score | Score function estimation; `--noise_model gaussian/poisson/gamma`; `--blind` for auto σ via TV-norm; no masking — see `denoise_N2Score.py` |
+| DIP | No noise model; EMA early stopping (~3–5 min GPU); triggers on overfitting plateau — see `denoise_DIP.py` |
 
 Document the difference clearly in the file header's "Differences from
 denoise_N2V.py" block.
@@ -193,10 +213,16 @@ training set's intensity distribution before inference.
 ## Output naming
 
 Output files go under `data/`:
-- TIF: `data/denoised_sem_<ALGORITHM>.tif`
-- PNG: `data/denoising_result_<ALGORITHM>.png`
+- TIF: `data/denoised_sem_<tag>.tif`
+- PNG: `data/denoising_result_<tag>.png`
 
-Use ALL_CAPS short name for `<ALGORITHM>`, e.g., `N2S`, `HDN`, `R2R`, `LOG`.
+Use a lowercase_underscore `<tag>` that matches the script's name suffix, e.g.:
+
+| Script | Tag | TIF output |
+|---|---|---|
+| `denoise_HDN.py` | `HDN` | `data/denoised_sem_HDN.tif` |
+| `denoise_log_N2V_GMM_bic.py` | `log_N2V_GMM_bic` | `data/denoised_sem_log_N2V_GMM_bic.tif` |
+| `denoise_N2Score.py` | `N2Score` | `data/denoised_sem_N2Score.tif` |
 
 Update `CLAUDE.md`'s Script Selection Guide table after writing the script —
 add a row with the filename, when to use it, and the output path.
@@ -227,8 +253,8 @@ Add algorithm-specific args as needed (e.g., `--n_gaussians` for PN2V).
 - [ ] `os.environ` thread vars set before any import that might fork
 - [ ] File header lists paper, differences, and identical sections
 - [ ] `--tile_size` and `--device` args present in argparse
-- [ ] CLAUDE.md **Script Selection Guide** table updated with new row
-- [ ] CLAUDE.md **Noise Type Decision** section updated with new algorithm entry
+- [ ] CLAUDE.md **Script Selection** section: add entry under the appropriate noise-type heading
+- [ ] CLAUDE.md **Script Selection** section: if no existing heading fits, add a new sub-heading
 - [ ] Script runs end-to-end with defaults: `python <script>.py` succeeds on `data/test_sem.tif`
 
 ---
